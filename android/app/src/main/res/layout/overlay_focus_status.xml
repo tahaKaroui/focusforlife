@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/overlayRoot"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content">
+
+    <LinearLayout
+        android:id="@+id/overlayBubble"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:background="@drawable/overlay_bubble_bg"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="6dp">
+
+        <TextView
+            android:id="@+id/overlayBubbleLabel"
+            android:text="FOCUS"
+            android:textColor="@android:color/white"
+            android:textSize="9sp"
+            android:textStyle="bold"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:id="@+id/overlayBubbleTime"
+            android:text="10:00"
+            android:textColor="@android:color/white"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+    </LinearLayout>
+
+    <View
+        android:id="@+id/overlayMinimized"
+        android:layout_width="18dp"
+        android:layout_height="18dp"
+        android:background="@drawable/overlay_bubble_bg"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:id="@+id/overlayExpanded"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/overlay_card_bg"
+        android:minWidth="180dp"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/overlayTitle"
+            android:text="FOCUS TIMER"
+            android:textColor="@android:color/white"
+            android:textStyle="bold"
+            android:textSize="12sp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:id="@+id/overlayBody"
+            android:textColor="@android:color/white"
+            android:textSize="14sp"
+            android:layout_marginTop="6dp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+    </LinearLayout>
+</FrameLayout>
