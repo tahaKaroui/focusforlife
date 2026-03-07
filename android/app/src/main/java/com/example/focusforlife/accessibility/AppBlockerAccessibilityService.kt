@@ -63,7 +63,14 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         tickActiveUsage()
 
         val packageName = event.packageName.toString()
-        if (shouldBlockFocusTogglePage(packageName)) {
+        if (shouldBlockUninstallDialog(packageName) ||
+            shouldBlockFocusTogglePage(packageName) ||
+            shouldBlockBatterySaverPage(packageName) ||
+            shouldBlockMiuiPermissionsPage(packageName) ||
+            shouldBlockForceStopDialog(packageName) ||
+            shouldBlockClearDataSheet(packageName) ||
+            shouldBlockLauncherUninstallDialog(packageName)
+        ) {
             FocusLogger.w("FocusForLife toggle page detected ($packageName); blocking.")
             blockNow()
             return
@@ -288,18 +295,118 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
     private fun shouldBlockFocusTogglePage(packageName: String): Boolean {
         if (FocusLockManager.isMaintenanceActive(this)) return false
-        if (packageName != "com.android.settings" && packageName != "com.miui.securitycenter") {
-            return false
-        }
+        if (packageName != "com.android.settings") return false
         val root = rootInActiveWindow ?: return false
-        val hasTitle = hasText(root, "FocusForLife") || hasText(root, "Focus For Life")
-        val hasToggleLabel = hasText(root, "Use FocusForLife") || hasText(root, "Use Focus For Life")
-        return hasTitle && hasToggleLabel
+        val titleNodes = root.findAccessibilityNodeInfosByViewId("com.android.settings:id/action_bar_title_expand")
+        val titleText = titleNodes?.firstOrNull()?.text?.toString().orEmpty()
+        val switchNodes = root.findAccessibilityNodeInfosByViewId("android:id/switch_widget")
+        val titleMatches = titleText.contains("FocusForLife", ignoreCase = true) ||
+            titleText.contains("Focus For Life", ignoreCase = true)
+        return titleMatches && !switchNodes.isNullOrEmpty()
     }
 
     private fun hasText(root: AccessibilityNodeInfo, text: String): Boolean {
         val nodes = root.findAccessibilityNodeInfosByText(text)
         return !nodes.isNullOrEmpty()
+    }
+
+    private fun shouldBlockUninstallDialog(packageName: String): Boolean {
+        if (FocusLockManager.isMaintenanceActive(this)) return false
+        if (packageName != "com.miui.securitycenter") return false
+        val root = rootInActiveWindow ?: return false
+        val uninstallTitle = "com.miui.securitycenter:id/alertTitle"
+        val messageId = "com.miui.securitycenter:id/message"
+        val titleNodes = root.findAccessibilityNodeInfosByViewId(uninstallTitle)
+        val messageNodes = root.findAccessibilityNodeInfosByViewId(messageId)
+        val titleText = titleNodes?.firstOrNull()?.text?.toString().orEmpty()
+        val messageText = messageNodes?.firstOrNull()?.text?.toString().orEmpty()
+        val titleMatches = titleText.contains("FocusForLife", ignoreCase = true) ||
+            titleText.contains("Focus For Life", ignoreCase = true)
+        val messageMatches = messageText.contains("app data", ignoreCase = true) ||
+            messageText.contains("données", ignoreCase = true) ||
+            messageText.contains("datos", ignoreCase = true)
+        return titleMatches && messageMatches
+    }
+
+    private fun shouldBlockBatterySaverPage(packageName: String): Boolean {
+        if (FocusLockManager.isMaintenanceActive(this)) return false
+        if (packageName != "com.miui.securitycenter") return false
+        val root = rootInActiveWindow ?: return false
+        val titleNodes = root.findAccessibilityNodeInfosByViewId("com.miui.securitycenter:id/action_bar_title_expand")
+        val titleText = titleNodes?.firstOrNull()?.text?.toString().orEmpty()
+        val appTitleNodes = root.findAccessibilityNodeInfosByViewId("com.miui.securitycenter:id/title")
+        val appTitleText = appTitleNodes?.firstOrNull()?.text?.toString().orEmpty()
+        val isBatteryDetails = titleText.contains("Battery details", ignoreCase = true)
+        val isFocusEntry = appTitleText.contains("FocusForLife", ignoreCase = true) ||
+            appTitleText.contains("Focus For Life", ignoreCase = true)
+        val hasRadio = !root.findAccessibilityNodeInfosByViewId("android:id/checkbox").isNullOrEmpty()
+        return isBatteryDetails && isFocusEntry && hasRadio
+    }
+
+    private fun shouldBlockMiuiPermissionsPage(packageName: String): Boolean {
+        if (FocusLockManager.isMaintenanceActive(this)) return false
+        if (packageName != "com.miui.securitycenter") return false
+        val root = rootInActiveWindow ?: return false
+        val titleNodes = root.findAccessibilityNodeInfosByViewId("com.miui.securitycenter:id/action_bar_title_expand")
+        val titleText = titleNodes?.firstOrNull()?.text?.toString().orEmpty()
+        val titleMatches = titleText.contains("FocusForLife", ignoreCase = true) ||
+            titleText.contains("Focus For Life", ignoreCase = true)
+        val hasPermissionAction =
+            !root.findAccessibilityNodeInfosByViewId("com.miui.securitycenter:id/action").isNullOrEmpty()
+        return titleMatches && hasPermissionAction
+    }
+
+    private fun shouldBlockForceStopDialog(packageName: String): Boolean {
+        if (FocusLockManager.isMaintenanceActive(this)) return false
+        if (packageName != "com.miui.securitycenter") return false
+        val root = rootInActiveWindow ?: return false
+        val titleNodes = root.findAccessibilityNodeInfosByViewId("com.miui.securitycenter:id/alertTitle")
+        val messageNodes = root.findAccessibilityNodeInfosByViewId("com.miui.securitycenter:id/message")
+        if (titleNodes.isNullOrEmpty() || messageNodes.isNullOrEmpty()) return false
+        val titleText = titleNodes.firstOrNull()?.text?.toString().orEmpty()
+        val messageText = messageNodes.firstOrNull()?.text?.toString().orEmpty()
+        val titleMatches = titleText.contains("Force stop", ignoreCase = true) ||
+            titleText.contains("Forcer l'arrêt", ignoreCase = true) ||
+            titleText.contains("Forzar detención", ignoreCase = true)
+        val messageMatches = messageText.contains("force stop", ignoreCase = true) ||
+            messageText.contains("misbehave", ignoreCase = true)
+        return titleMatches && messageMatches
+    }
+
+    private fun shouldBlockClearDataSheet(packageName: String): Boolean {
+        if (FocusLockManager.isMaintenanceActive(this)) return false
+        if (packageName != "com.miui.securitycenter") return false
+        val root = rootInActiveWindow ?: return false
+        val sheetMessageId = "com.miui.securitycenter:id/action_sheet_message"
+        val cancelButtonId = "com.miui.securitycenter:id/action_sheet_cancel_button"
+        val listItemId = "android:id/text1"
+        val messageNodes = root.findAccessibilityNodeInfosByViewId(sheetMessageId)
+        val cancelNodes = root.findAccessibilityNodeInfosByViewId(cancelButtonId)
+        val itemNodes = root.findAccessibilityNodeInfosByViewId(listItemId)
+        if (messageNodes.isNullOrEmpty() || cancelNodes.isNullOrEmpty() || itemNodes.isNullOrEmpty()) {
+            return false
+        }
+        val messageText = messageNodes.firstOrNull()?.text?.toString().orEmpty()
+        val hasClearData = messageText.contains("Clear data", ignoreCase = true) ||
+            messageText.contains("Clear all data", ignoreCase = true)
+        return hasClearData
+    }
+
+    private fun shouldBlockLauncherUninstallDialog(packageName: String): Boolean {
+        if (FocusLockManager.isMaintenanceActive(this)) return false
+        if (packageName != "com.mi.android.globallauncher") return false
+        val root = rootInActiveWindow ?: return false
+        val titleNodes = root.findAccessibilityNodeInfosByViewId("com.mi.android.globallauncher:id/title")
+        val descNodes = root.findAccessibilityNodeInfosByViewId("com.mi.android.globallauncher:id/description_text")
+        if (titleNodes.isNullOrEmpty() || descNodes.isNullOrEmpty()) return false
+        val titleText = titleNodes.firstOrNull()?.text?.toString().orEmpty()
+        val descText = descNodes.firstOrNull()?.text?.toString().orEmpty()
+        val titleMatches = titleText.contains("FocusForLife", ignoreCase = true) ||
+            titleText.contains("Focus For Life", ignoreCase = true)
+        val descMatches = descText.contains("app data", ignoreCase = true) ||
+            descText.contains("données", ignoreCase = true) ||
+            descText.contains("datos", ignoreCase = true)
+        return titleMatches && descMatches
     }
 
 
