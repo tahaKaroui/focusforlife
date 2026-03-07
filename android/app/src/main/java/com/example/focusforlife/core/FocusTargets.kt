@@ -76,7 +76,8 @@ object FocusTargets {
         "com.duckduckgo.mobile.android",
         "com.ecosia.android",
         "com.google.android.apps.searchlite",
-        "com.android.browser"
+        "com.android.browser",
+        "com.mi.globalbrowser"
     )
 
     val blockedAppSet: Set<String> = blockedAppPackages.toSet()
