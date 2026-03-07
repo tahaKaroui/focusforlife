@@ -52,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.focusforlife.accessibility.AppBlockerAccessibilityService
 import com.example.focusforlife.admin.FocusAdminReceiver
+import com.example.focusforlife.admin.DeviceOwnerController
 import com.example.focusforlife.core.FocusLockManager
 import com.example.focusforlife.core.FocusRules
 import com.example.focusforlife.core.FocusTargets
@@ -94,6 +95,8 @@ class MainActivity : ComponentActivity() {
                         onStopOverlay = { stopOverlayService() },
                         onEnableDeviceAdmin = { requestDeviceAdmin() },
                         onRequestExactAlarm = { requestExactAlarmPermission() },
+                        onRequestMaintenance = { pin -> requestMaintenanceUnlock(pin) },
+                        onEndMaintenance = { endMaintenance() },
                         onSetPin = { currentPin, newPin -> setPin(currentPin, newPin) },
                         onRequestDisable = { pin -> requestDisable(pin) },
                         onDisableNow = { disableNow() }
@@ -107,6 +110,8 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         FocusLogger.v("MainActivity resumed")
         refreshDashboard()
+        DeviceOwnerController.applyPolicies(this)
+        DeviceOwnerController.enforceLockTask(this)
     }
 
     @Deprecated(
@@ -136,6 +141,9 @@ class MainActivity : ComponentActivity() {
             isDeviceAdminEnabled = isDeviceAdminEnabled(),
             hasPin = FocusLockManager.hasPin(this),
             exactAlarmAllowed = isExactAlarmAllowed(),
+            isDeviceOwner = DeviceOwnerController.isDeviceOwner(this),
+            isMaintenanceActive = FocusLockManager.isMaintenanceActive(this),
+            maintenanceRemainingSeconds = FocusLockManager.maintenanceRemainingSeconds(this),
             blockedApps = FocusTargets.blockedAppPackages,
             blockedDomains = FocusTargets.blockedDomains,
             perAppUsage = FocusRules.getPerAppUsageSeconds(this),
@@ -289,6 +297,31 @@ class MainActivity : ComponentActivity() {
         refreshDashboard()
     }
 
+    private fun requestMaintenanceUnlock(pin: String) {
+        if (!DeviceOwnerController.isDeviceOwner(this)) {
+            toast("Device owner not enabled.")
+            return
+        }
+        if (!FocusLockManager.verifyPin(this, pin)) {
+            toast("Wrong PIN.")
+            return
+        }
+        FocusLockManager.startMaintenanceWindow(this)
+        DeviceOwnerController.applyPolicies(this)
+        DeviceOwnerController.exitLockTask(this)
+        toast("Maintenance unlocked for 10 minutes.")
+        refreshDashboard()
+    }
+
+    private fun endMaintenance() {
+        if (!DeviceOwnerController.isDeviceOwner(this)) return
+        FocusLockManager.clearMaintenanceWindow(this)
+        DeviceOwnerController.applyPolicies(this)
+        DeviceOwnerController.enforceLockTask(this)
+        toast("Maintenance ended.")
+        refreshDashboard()
+    }
+
     private fun disableNow() {
         if (!FocusLockManager.isDisableReady(this)) {
             toast("Disable window not reached yet.")
@@ -339,6 +372,9 @@ data class DashboardState(
     val isDeviceAdminEnabled: Boolean = false,
     val hasPin: Boolean = false,
     val exactAlarmAllowed: Boolean = true,
+    val isDeviceOwner: Boolean = false,
+    val isMaintenanceActive: Boolean = false,
+    val maintenanceRemainingSeconds: Long = 0L,
     val blockedApps: List<String> = emptyList(),
     val blockedDomains: List<String> = emptyList(),
     val perAppUsage: Map<String, Long> = emptyMap(),
@@ -360,12 +396,16 @@ fun DashboardScreen(
     onStopOverlay: () -> Unit,
     onEnableDeviceAdmin: () -> Unit,
     onRequestExactAlarm: () -> Unit,
+    onRequestMaintenance: (String) -> Unit,
+    onEndMaintenance: () -> Unit,
     onSetPin: (String, String) -> Unit,
     onRequestDisable: (String) -> Unit,
     onDisableNow: () -> Unit
 ) {
     var currentPin by androidx.compose.runtime.remember { mutableStateOf("") }
     var newPin by androidx.compose.runtime.remember { mutableStateOf("") }
+    var maintenancePin by androidx.compose.runtime.remember { mutableStateOf("") }
+    var showMaintenanceDialog by androidx.compose.runtime.remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         while (isActive) {
@@ -408,11 +448,44 @@ fun DashboardScreen(
                 onEnableDeviceAdmin = onEnableDeviceAdmin,
                 onSetPin = { onSetPin(currentPin, newPin) },
                 onRequestDisable = { onRequestDisable(currentPin) },
-                onDisableNow = onDisableNow
+                onDisableNow = onDisableNow,
+                onRequestMaintenance = { showMaintenanceDialog = true },
+                onEndMaintenance = onEndMaintenance
             )
             BlockTargetsCard(state)
             UsageCard(state)
         }
+    }
+
+    if (showMaintenanceDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showMaintenanceDialog = false },
+            title = { Text("Maintenance Unlock") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Enter PIN to unlock maintenance for 10 minutes.")
+                    OutlinedTextField(
+                        value = maintenancePin,
+                        onValueChange = { maintenancePin = it },
+                        label = { Text("PIN") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onRequestMaintenance(maintenancePin)
+                        maintenancePin = ""
+                        showMaintenanceDialog = false
+                    }
+                ) { Text("Unlock") }
+            },
+            dismissButton = {
+                Button(onClick = { showMaintenanceDialog = false }) { Text("Cancel") }
+            }
+        )
     }
 }
 
@@ -426,7 +499,9 @@ private fun ProtectionCard(
     onEnableDeviceAdmin: () -> Unit,
     onSetPin: () -> Unit,
     onRequestDisable: () -> Unit,
-    onDisableNow: () -> Unit
+    onDisableNow: () -> Unit,
+    onRequestMaintenance: () -> Unit,
+    onEndMaintenance: () -> Unit
 ) {
     Card {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -458,6 +533,21 @@ private fun ProtectionCard(
             }
             Button(onClick = onRequestDisable) {
                 Text("Request Disable (10 min delay)")
+            }
+            if (state.isDeviceOwner) {
+                Text(
+                    text = if (state.isMaintenanceActive) {
+                        "Maintenance active: ${formatDuration(state.maintenanceRemainingSeconds)}"
+                    } else {
+                        "Maintenance: OFF"
+                    },
+                    color = if (state.isMaintenanceActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (state.isMaintenanceActive) {
+                    Button(onClick = onEndMaintenance) { Text("End Maintenance") }
+                } else {
+                    Button(onClick = onRequestMaintenance) { Text("Maintenance Unlock") }
+                }
             }
             if (state.disableRemainingSeconds > 0) {
                 Text(

@@ -9,6 +9,7 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.example.focusforlife.ui.BlockedActivity
 import com.example.focusforlife.core.FocusForegroundTracker
+import com.example.focusforlife.core.FocusLockManager
 import com.example.focusforlife.core.FocusRules
 import com.example.focusforlife.core.FocusTargets
 import com.example.focusforlife.logging.FocusLogger
@@ -21,9 +22,15 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
     private val blockedApps = FocusTargets.blockedAppSet
     private val browserPackages = FocusTargets.browserPackageSet
+    private val defaultLauncherPackage: String? by lazy {
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        packageManager.resolveActivity(intent, 0)?.activityInfo?.packageName
+    }
 
     private var activePackage: String? = null
     private var lastActiveTimestamp: Long = 0L
+    private var pendingStopDeadline: Long = 0L
+    private var pendingStopPackage: String? = null
     private var activeBrowserDomain: String? = null
     private var activeBrowserPackage: String? = null
     private var lastBrowserTimestamp: Long = 0L
@@ -56,8 +63,18 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         tickActiveUsage()
 
         val packageName = event.packageName.toString()
+        if (shouldBlockFocusTogglePage(packageName)) {
+            FocusLogger.w("FocusForLife toggle page detected ($packageName); blocking.")
+            blockNow()
+            return
+        }
+
         FocusForegroundTracker.update(packageName)
         FocusLogger.v("A11y event type=$eventType pkg=$packageName")
+
+        if (packageName == activePackage) {
+            clearPendingStop()
+        }
 
         if (browserPackages.contains(packageName)) {
             val blockedDomain = extractBlockedDomain(packageName)
@@ -68,7 +85,11 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
         if (!blockedApps.contains(packageName)) {
             if (activePackage != null && packageName != activePackage) {
-                finalizeActiveUsage()
+                if (isTransientPackage(packageName)) {
+                    schedulePendingStop()
+                } else {
+                    finalizeActiveUsage()
+                }
             }
             return
         }
@@ -84,12 +105,24 @@ class AppBlockerAccessibilityService : AccessibilityService() {
             activePackage = packageName
             lastActiveTimestamp = System.currentTimeMillis()
             startUsageTicker()
+            clearPendingStop()
             FocusLogger.i("Started tracking $packageName")
         }
     }
 
     private fun tickActiveUsage() {
         val now = System.currentTimeMillis()
+        if (pendingStopDeadline > 0L && now >= pendingStopDeadline) {
+            val trackingPackage = activePackage
+            val currentPackage = FocusForegroundTracker.currentPackage()
+            if (trackingPackage != null && trackingPackage == pendingStopPackage) {
+                if (currentPackage == null || currentPackage != trackingPackage) {
+                    FocusLogger.i("Pending stop elapsed; finalizing $trackingPackage")
+                    finalizeActiveUsage()
+                }
+            }
+            clearPendingStop()
+        }
         val trackingPackage = activePackage
         if (trackingPackage != null) {
             if (lastActiveTimestamp == 0L) {
@@ -127,12 +160,15 @@ class AppBlockerAccessibilityService : AccessibilityService() {
                 }
             }
         }
+
+        reconcileForegroundFromRoot()
     }
 
     private fun finalizeActiveUsage() {
         if (activePackage == null || lastActiveTimestamp == 0L) {
             activePackage = null
             lastActiveTimestamp = 0L
+            clearPendingStop()
             stopUsageTickerIfIdle()
             return
         }
@@ -144,6 +180,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         FocusLogger.i("Stopped tracking ${activePackage}")
         activePackage = null
         lastActiveTimestamp = 0L
+        clearPendingStop()
         stopUsageTickerIfIdle()
     }
 
@@ -231,6 +268,71 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun schedulePendingStop() {
+        val trackingPackage = activePackage ?: return
+        if (pendingStopPackage == trackingPackage) return
+        pendingStopPackage = trackingPackage
+        pendingStopDeadline = System.currentTimeMillis() + PENDING_STOP_GRACE_MS
+        FocusLogger.i("Pending stop scheduled for $trackingPackage")
+    }
+
+    private fun clearPendingStop() {
+        pendingStopPackage = null
+        pendingStopDeadline = 0L
+    }
+
+    private fun isTransientPackage(packageName: String): Boolean {
+        if (TRANSIENT_PACKAGES.contains(packageName)) return true
+        return defaultLauncherPackage == packageName
+    }
+
+    private fun shouldBlockFocusTogglePage(packageName: String): Boolean {
+        if (FocusLockManager.isMaintenanceActive(this)) return false
+        if (packageName != "com.android.settings" && packageName != "com.miui.securitycenter") {
+            return false
+        }
+        val root = rootInActiveWindow ?: return false
+        val hasTitle = hasText(root, "FocusForLife") || hasText(root, "Focus For Life")
+        val hasToggleLabel = hasText(root, "Use FocusForLife") || hasText(root, "Use Focus For Life")
+        return hasTitle && hasToggleLabel
+    }
+
+    private fun hasText(root: AccessibilityNodeInfo, text: String): Boolean {
+        val nodes = root.findAccessibilityNodeInfosByText(text)
+        return !nodes.isNullOrEmpty()
+    }
+
+
+    private fun reconcileForegroundFromRoot() {
+        val rootPackage = rootInActiveWindow?.packageName?.toString() ?: return
+        if (rootPackage == activePackage) return
+
+        FocusForegroundTracker.update(rootPackage)
+
+        if (!blockedApps.contains(rootPackage)) {
+            if (activePackage != null) {
+                if (isTransientPackage(rootPackage)) {
+                    schedulePendingStop()
+                } else {
+                    finalizeActiveUsage()
+                }
+            }
+            return
+        }
+
+        if (shouldBlockNow()) {
+            finalizeActiveUsage()
+            blockNow()
+            return
+        }
+
+        activePackage = rootPackage
+        lastActiveTimestamp = System.currentTimeMillis()
+        startUsageTicker()
+        clearPendingStop()
+        FocusLogger.i("Started tracking $rootPackage (root fallback)")
+    }
+
     private fun extractBlockedDomain(packageName: String): String? {
         val root = rootInActiveWindow ?: return null
         val urlText = findUrlText(root, packageName) ?: return null
@@ -270,5 +372,12 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val USAGE_TICK_MS = 1_000L
+        private const val PENDING_STOP_GRACE_MS = 1_800L
+        private val TRANSIENT_PACKAGES = setOf(
+            "com.android.systemui",
+            "miui.systemui.plugin",
+            "com.mi.android.globallauncher",
+            "com.mi.appfinder"
+        )
     }
 }
