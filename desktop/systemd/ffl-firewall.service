@@ -1,0 +1,13 @@
+[Unit]
+Description=FocusForLife Firewall Rules
+After=ffl-resolver.service
+Wants=ffl-resolver.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/nft -f /etc/unbound/focusforlife/ffl-dns.nft
+ExecStop=-/usr/sbin/nft delete table inet focusforlife_dns
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target

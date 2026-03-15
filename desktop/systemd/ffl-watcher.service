@@ -1,0 +1,15 @@
+[Unit]
+Description=FocusForLife Watcher
+After=ffl-daemon.service
+Wants=ffl-daemon.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ffl-watcher
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

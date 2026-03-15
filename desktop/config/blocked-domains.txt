@@ -1,0 +1,7 @@
+# Add one domain per line (no scheme)
+# Main list (confirm exact domains if any differ)
+site-a.example.com
+site-b.example.com
+facebook.com
+youtube.com
+game-test.example.com

@@ -1,0 +1,10 @@
+[package]
+name = "ffl-ui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ffl-shared = { path = "../shared" }
+anyhow = "1"
+serde_json = "1"
+eframe = "0.27"

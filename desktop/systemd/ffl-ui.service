@@ -1,0 +1,13 @@
+[Unit]
+Description=FocusForLife UI
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ffl-ui
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,18 @@
+[Unit]
+Description=FocusForLife Daemon
+After=network-online.target ffl-resolver.service ffl-firewall.service
+Wants=network-online.target ffl-resolver.service ffl-firewall.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ffl-daemon --config /etc/focusforlife/config.toml --browser-history-poll --browser-profile-root /home/user
+Restart=always
+RestartSec=2
+RuntimeDirectory=focusforlife
+RuntimeDirectoryMode=0755
+
+# Tighten privileges later once capabilities are finalized.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
