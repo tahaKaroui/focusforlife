@@ -26,6 +26,19 @@ impl SessionTracker {
         }
     }
 
+    /// Restore an in-progress session from the DB after a daemon restart.
+    pub fn restore_from_storage(storage: &Storage) -> Result<Self> {
+        if let Some((start_at, used_seconds)) = storage.load_current_session()? {
+            Ok(Self {
+                session_start: Some(start_at),
+                last_seen: Some(chrono::Local::now()),
+                used_in_session: used_seconds,
+            })
+        } else {
+            Ok(Self::new())
+        }
+    }
+
     pub fn tick(
         &mut self,
         config: &Config,
@@ -43,22 +56,17 @@ impl SessionTracker {
             self.last_seen = Some(now);
             self.used_in_session = self.used_in_session.saturating_add(delta_seconds);
             storage.add_daily_usage_seconds(now.date_naive(), delta_seconds)?;
+            storage.save_current_session(self.session_start.unwrap(), self.used_in_session)?;
 
             let limit_seconds = config.rules.continuous_limit_minutes * 60;
             if self.used_in_session >= limit_seconds {
                 let end_at = now;
                 if let Some(start_at) = self.session_start {
-                    storage.record_session(
-                        start_at,
-                        end_at,
-                        self.used_in_session,
-                        "limit",
-                    )?;
+                    storage.record_session(start_at, end_at, self.used_in_session, "limit")?;
                 }
+                storage.clear_current_session()?;
                 let cooldown_end = now + Duration::minutes(config.rules.cooldown_minutes as i64);
                 storage.set_cooldown_end(cooldown_end)?;
-                // Keep used_in_session at the limit so UI shows 0 remaining.
-                // It resets when the next session starts.
                 self.session_start = None;
                 self.last_seen = None;
             }
@@ -70,13 +78,9 @@ impl SessionTracker {
             if idle_seconds >= config.rules.idle_tolerance_seconds {
                 let end_at = now;
                 if let Some(start_at) = self.session_start {
-                    storage.record_session(
-                        start_at,
-                        end_at,
-                        self.used_in_session,
-                        "idle",
-                    )?;
+                    storage.record_session(start_at, end_at, self.used_in_session, "idle")?;
                 }
+                storage.clear_current_session()?;
                 self.reset();
             }
         }
@@ -89,13 +93,9 @@ impl SessionTracker {
 
     pub fn force_end(&mut self, storage: &Storage, now: DateTime<Local>) -> Result<()> {
         if let Some(start_at) = self.session_start {
-            storage.record_session(
-                start_at,
-                now,
-                self.used_in_session,
-                "forced",
-            )?;
+            storage.record_session(start_at, now, self.used_in_session, "forced")?;
         }
+        storage.clear_current_session()?;
         self.reset();
         Ok(())
     }

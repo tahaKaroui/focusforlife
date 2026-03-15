@@ -72,8 +72,41 @@ install -m 644 "${REPO_ROOT}/systemd/ffl-ui.service" "${USER_SYSTEMD_DIR}/ffl-ui
 sudo -u "${BUILD_USER}" systemctl --user daemon-reload
 sudo -u "${BUILD_USER}" systemctl --user enable --now ffl-ui.service
 
+# Configure browsers to expose the CDP debug port so ffl-daemon can track
+# open tabs in real time.  We install a local .desktop override per browser
+# that appends --remote-debugging-port=<N> to the Exec line.
+setup_cdp_desktop() {
+  local src_desktop="$1"   # e.g. /usr/share/applications/brave-browser.desktop
+  local dst_desktop="$2"   # e.g. ~/.local/share/applications/brave-browser.desktop
+  local port="$3"
+
+  if [[ ! -f "${src_desktop}" ]]; then
+    return
+  fi
+
+  mkdir -p "$(dirname "${dst_desktop}")"
+  # Copy the original, then patch every Exec= line to add the debug port flag.
+  sed "s|^Exec=\(.*\)%U|Exec=\1--remote-debugging-port=${port} %U|;
+       s|^Exec=\(.*\)%u|Exec=\1--remote-debugging-port=${port} %u|;
+       s|^Exec=\(.*\)\$|Exec=\1 --remote-debugging-port=${port}|" \
+    "${src_desktop}" > "${dst_desktop}"
+  chmod 644 "${dst_desktop}"
+  echo "CDP debug port ${port} configured for: ${dst_desktop}"
+}
+
+APPS_DST="${BUILD_HOME}/.local/share/applications"
+setup_cdp_desktop /usr/share/applications/brave-browser.desktop  "${APPS_DST}/brave-browser.desktop"  9222
+setup_cdp_desktop /usr/share/applications/google-chrome.desktop  "${APPS_DST}/google-chrome.desktop"  9223
+setup_cdp_desktop /usr/share/applications/chromium-browser.desktop "${APPS_DST}/chromium-browser.desktop" 9224
+
+# Fix ownership — we wrote these as root via sudo
+chown "${BUILD_USER}:${BUILD_USER}" "${APPS_DST}"/*.desktop 2>/dev/null || true
+
 echo ""
 echo "FocusForLife installed. Everything starts automatically on boot."
+echo ""
+echo "NOTE: Restart your browser(s) for CDP tab tracking to take effect."
+echo "      (Close and reopen Brave/Chrome from your app launcher.)"
 echo ""
 echo "Useful commands:"
 echo "  journalctl -u ffl-daemon -f          # live daemon logs"

@@ -45,6 +45,12 @@ impl Storage {
               duration_seconds integer not null,
               ended_by text not null
             );
+
+            create table if not exists current_session (
+              id integer primary key check (id = 1),
+              start_at text not null,
+              used_seconds integer not null
+            );
             "#,
         )?;
         Ok(())
@@ -146,6 +152,38 @@ impl Storage {
                                             decided_at = excluded.decided_at",
             params![day_str, if granted { 1 } else { 0 }, now.to_rfc3339()],
         )?;
+        Ok(())
+    }
+
+    pub fn save_current_session(&self, start_at: DateTime<Local>, used_seconds: u32) -> Result<()> {
+        self.conn.execute(
+            "insert into current_session (id, start_at, used_seconds) values (1, ?1, ?2)
+             on conflict(id) do update set start_at = excluded.start_at,
+                                           used_seconds = excluded.used_seconds",
+            params![start_at.to_rfc3339(), used_seconds as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_current_session(&self) -> Result<Option<(DateTime<Local>, u32)>> {
+        let mut stmt = self.conn.prepare(
+            "select start_at, used_seconds from current_session where id = 1",
+        )?;
+        let mut rows = stmt.query([])?;
+        if let Some(row) = rows.next()? {
+            let start_at: String = row.get(0)?;
+            let used_seconds: i64 = row.get(1)?;
+            let parsed = DateTime::parse_from_rfc3339(&start_at)
+                .map(|dt| dt.with_timezone(&Local))
+                .ok();
+            Ok(parsed.map(|start| (start, used_seconds.max(0) as u32)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn clear_current_session(&self) -> Result<()> {
+        self.conn.execute("delete from current_session where id = 1", [])?;
         Ok(())
     }
 

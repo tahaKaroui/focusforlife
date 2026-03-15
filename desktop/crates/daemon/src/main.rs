@@ -13,6 +13,9 @@ use ffl_shared::ipc::{DaemonEvent, PromptRequest, StatusSnapshot};
 mod browser_history;
 use browser_history::BrowserHistoryTracker;
 
+mod cdp_tracker;
+use cdp_tracker::{CdpTracker, DEFAULT_CDP_PORTS};
+
 mod enforcement;
 use enforcement::{DnsTestAssets, Enforcement};
 
@@ -101,6 +104,15 @@ fn main() -> Result<()> {
         run_browser_history_tracking(&config, &storage, &profile_root, &enforcement)?;
     }
 
+    if args.cdp_poll {
+        let ports = if args.cdp_ports.is_empty() {
+            DEFAULT_CDP_PORTS.to_vec()
+        } else {
+            args.cdp_ports
+        };
+        run_cdp_tracking(&config, &storage, ports, &enforcement)?;
+    }
+
     if let Some(hit_stream) = args.hit_stream_path {
         run_live_tracking(&config, &storage, &hit_stream)?;
     }
@@ -116,6 +128,8 @@ struct Args {
     hit_stream_path: Option<PathBuf>,
     browser_history_poll: bool,
     browser_profile_root: Option<PathBuf>,
+    cdp_poll: bool,
+    cdp_ports: Vec<u16>,
     write_dns_test_assets_dir: Option<PathBuf>,
     unbound_blocklist_include_path: Option<String>,
     resolver_port: u16,
@@ -130,6 +144,8 @@ fn parse_args() -> Args {
     let mut hit_stream_path = None;
     let mut browser_history_poll = false;
     let mut browser_profile_root = None;
+    let mut cdp_poll = false;
+    let mut cdp_ports: Vec<u16> = Vec::new();
     let mut write_dns_test_assets_dir = None;
     let mut unbound_blocklist_include_path = None;
     let mut resolver_port: u16 = 5335;
@@ -188,6 +204,18 @@ fn parse_args() -> Args {
                     resolver_port = value.parse().unwrap_or(5335);
                 }
             }
+            "--cdp-poll" => {
+                cdp_poll = true;
+            }
+            "--cdp-ports" => {
+                // Comma-separated list of ports, e.g. "9222,9223"
+                if let Some(value) = args.next() {
+                    cdp_ports = value
+                        .split(',')
+                        .filter_map(|s| s.trim().parse().ok())
+                        .collect();
+                }
+            }
             _ => {}
         }
     }
@@ -201,6 +229,8 @@ fn parse_args() -> Args {
         hit_stream_path,
         browser_history_poll,
         browser_profile_root,
+        cdp_poll,
+        cdp_ports,
         write_dns_test_assets_dir,
         unbound_blocklist_include_path,
         resolver_port,
@@ -356,7 +386,8 @@ fn run_browser_history_tracking(
     let ipc = IpcServer::bind(Path::new("/run/focusforlife/daemon.sock"))?;
     println!("IPC socket bound at /run/focusforlife/daemon.sock");
 
-    let mut tracker = SessionTracker::new();
+    let mut tracker = SessionTracker::restore_from_storage(storage).unwrap_or_else(|_| SessionTracker::new());
+    println!("session restored: used={}s", tracker.used_in_session());
     let mut active_until: Option<chrono::DateTime<chrono::Local>> = None;
     let mut tick_count: u64 = 0;
     // None = not yet applied; Some(true) = blocklist active; Some(false) = blocklist cleared.
@@ -419,6 +450,85 @@ fn run_browser_history_tracking(
         if tick_count % 10 == 0 {
             let usage = storage.get_daily_usage(now.date_naive())?;
             println!("history-tracking... used={}s on_target={} blocked={}", usage.used_seconds, on_target, is_blocked);
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+}
+
+fn run_cdp_tracking(
+    config: &Config,
+    storage: &Storage,
+    ports: Vec<u16>,
+    enforcement: &Enforcement,
+) -> Result<()> {
+    let domains = load_domain_list(&PathBuf::from("/etc/focusforlife/blocked-domains.txt")).unwrap_or_default();
+    let domain_set: std::collections::HashSet<String> = domains.iter().cloned().collect();
+    let tracker_cdp = CdpTracker::new(ports.clone());
+
+    println!("CDP tracking active on ports: {:?}", ports);
+
+    fs::create_dir_all("/run/focusforlife")?;
+    let ipc = IpcServer::bind(Path::new("/run/focusforlife/daemon.sock"))?;
+    println!("IPC socket bound at /run/focusforlife/daemon.sock");
+
+    let mut tracker = SessionTracker::restore_from_storage(storage).unwrap_or_else(|_| SessionTracker::new());
+    println!("session restored: used={}s", tracker.used_in_session());
+    let mut tick_count: u64 = 0;
+    let mut last_blocked: Option<bool> = None;
+
+    loop {
+        let now = chrono::Local::now();
+
+        // Check all open tabs right now — exact, no lag.
+        let on_target_cdp = tracker_cdp
+            .poll_domains()
+            .iter()
+            .any(|d| domain_matches_blocked(d, &domain_set));
+
+        let usage = storage.get_daily_usage(now.date_naive())?;
+        let cooldown_end = storage.get_cooldown_end()?;
+        let free_time_granted = storage
+            .get_free_time_grant(now.date_naive())?
+            .unwrap_or(false);
+        let result = rules::evaluate(
+            config,
+            rules::RuleInputs { now, usage, cooldown_end, free_time_granted },
+        )?;
+        let is_blocked = !matches!(result.state, ffl_shared::ipc::FocusState::Allowed);
+
+        if last_blocked != Some(is_blocked) {
+            if is_blocked {
+                println!("enforcement: applying blocklist ({} domains, state={:?})", domains.len(), result.state);
+                if let Err(e) = enforcement.apply_blocklist(&domains) {
+                    eprintln!("failed to apply blocklist: {e}");
+                } else if let Err(e) = enforcement.reload_unbound() {
+                    eprintln!("failed to reload unbound: {e}");
+                }
+            } else {
+                println!("enforcement: clearing blocklist (state=allowed)");
+                if let Err(e) = enforcement.apply_blocklist(&[]) {
+                    eprintln!("failed to clear blocklist: {e}");
+                } else if let Err(e) = enforcement.reload_unbound() {
+                    eprintln!("failed to reload unbound: {e}");
+                }
+            }
+            last_blocked = Some(is_blocked);
+        }
+
+        // Only count time when access is allowed and a blocked site is open right now.
+        let on_target = !is_blocked && on_target_cdp;
+        tracker.tick(config, storage, now, on_target, 1)?;
+
+        if tick_count % 2 == 0 {
+            broadcast_status(config, storage, &tracker, now, &ipc);
+        }
+
+        handle_free_time_prompt(config, storage, now, &ipc)?;
+
+        tick_count += 1;
+        if tick_count % 10 == 0 {
+            let usage = storage.get_daily_usage(now.date_naive())?;
+            println!("cdp-tracking... used={}s on_target={} blocked={}", usage.used_seconds, on_target, is_blocked);
         }
         thread::sleep(Duration::from_secs(1));
     }
