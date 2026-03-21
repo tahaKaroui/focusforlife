@@ -1,108 +1,80 @@
 use anyhow::Result;
-use chrono::{DateTime, Local, Duration};
+use chrono::{DateTime, Local, Timelike};
 
 use crate::storage::Storage;
-use ffl_shared::config::Config;
 
-#[derive(Debug, Clone, Copy)]
-pub enum EndedBy {
-    Idle,
-    Limit,
-    Forced,
+/// Tracks usage within hourly buckets. Resets at each clock-hour boundary.
+/// Matches the Android FocusRules.kt hourly model.
+pub struct HourlyTracker {
+    current_stamp: u64,
+    used_seconds: u32,
 }
 
-pub struct SessionTracker {
-    session_start: Option<DateTime<Local>>,
-    last_seen: Option<DateTime<Local>>,
-    used_in_session: u32,
-}
-
-impl SessionTracker {
+impl HourlyTracker {
     pub fn new() -> Self {
         Self {
-            session_start: None,
-            last_seen: None,
-            used_in_session: 0,
+            current_stamp: 0,
+            used_seconds: 0,
         }
     }
 
-    /// Restore an in-progress session from the DB after a daemon restart.
+    /// Restore hourly bucket state from the DB after a daemon restart.
     pub fn restore_from_storage(storage: &Storage) -> Result<Self> {
-        if let Some((start_at, used_seconds)) = storage.load_current_session()? {
-            Ok(Self {
-                session_start: Some(start_at),
-                last_seen: Some(chrono::Local::now()),
-                used_in_session: used_seconds,
-            })
-        } else {
-            Ok(Self::new())
-        }
+        let (stamp, used) = storage.get_hourly_bucket()?;
+        Ok(Self {
+            current_stamp: stamp,
+            used_seconds: used,
+        })
     }
 
     pub fn tick(
         &mut self,
-        config: &Config,
         storage: &Storage,
         now: DateTime<Local>,
         on_target: bool,
         delta_seconds: u32,
     ) -> Result<()> {
+        let stamp = hour_stamp(now);
+
+        // Hour rolled over — reset the bucket.
+        if stamp != self.current_stamp {
+            self.current_stamp = stamp;
+            self.used_seconds = 0;
+        }
+
         if on_target {
-            if self.session_start.is_none() {
-                self.session_start = Some(now);
-                self.used_in_session = 0;
-                storage.increment_sessions_count(now.date_naive())?;
-            }
-            self.last_seen = Some(now);
-            self.used_in_session = self.used_in_session.saturating_add(delta_seconds);
+            self.used_seconds = self.used_seconds.saturating_add(delta_seconds);
             storage.add_daily_usage_seconds(now.date_naive(), delta_seconds)?;
-            storage.save_current_session(self.session_start.unwrap(), self.used_in_session)?;
-
-            let limit_seconds = config.rules.continuous_limit_minutes * 60;
-            if self.used_in_session >= limit_seconds {
-                let end_at = now;
-                if let Some(start_at) = self.session_start {
-                    storage.record_session(start_at, end_at, self.used_in_session, "limit")?;
-                }
-                storage.clear_current_session()?;
-                let cooldown_end = now + Duration::minutes(config.rules.cooldown_minutes as i64);
-                storage.set_cooldown_end(cooldown_end)?;
-                self.session_start = None;
-                self.last_seen = None;
-            }
-            return Ok(());
+            storage.set_hourly_bucket(stamp, self.used_seconds)?;
         }
 
-        if let Some(last_seen) = self.last_seen {
-            let idle_seconds = (now - last_seen).num_seconds().max(0) as u32;
-            if idle_seconds >= config.rules.idle_tolerance_seconds {
-                let end_at = now;
-                if let Some(start_at) = self.session_start {
-                    storage.record_session(start_at, end_at, self.used_in_session, "idle")?;
-                }
-                storage.clear_current_session()?;
-                self.reset();
-            }
-        }
         Ok(())
     }
 
-    pub fn used_in_session(&self) -> u32 {
-        self.used_in_session
+    pub fn hourly_used_seconds(&self) -> u32 {
+        self.used_seconds
     }
 
-    pub fn force_end(&mut self, storage: &Storage, now: DateTime<Local>) -> Result<()> {
-        if let Some(start_at) = self.session_start {
-            storage.record_session(start_at, now, self.used_in_session, "forced")?;
-        }
-        storage.clear_current_session()?;
-        self.reset();
-        Ok(())
+    pub fn current_hour_stamp(&self) -> u64 {
+        self.current_stamp
     }
+}
 
-    fn reset(&mut self) {
-        self.session_start = None;
-        self.last_seen = None;
-        self.used_in_session = 0;
-    }
+/// Unique identifier for a clock hour: year * 1_000_000 + day_of_year * 100 + hour.
+/// Matches Android's `hourStamp()` in FocusRules.kt.
+fn hour_stamp(now: DateTime<Local>) -> u64 {
+    let year = now.year() as u64;
+    let day = now.ordinal() as u64;
+    let hour = now.hour() as u64;
+    year * 1_000_000 + day * 100 + hour
+}
+
+use chrono::Datelike;
+
+/// Seconds remaining until the next clock-hour boundary.
+pub fn seconds_until_next_hour(now: DateTime<Local>) -> u32 {
+    let secs = now.second();
+    let mins = now.minute();
+    let remaining = 3600 - (mins * 60 + secs);
+    remaining
 }

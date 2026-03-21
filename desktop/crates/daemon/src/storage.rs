@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Local, NaiveDate};
+use chrono::{Local, NaiveDate};
 use rusqlite::{params, Connection};
 
 pub struct Storage {
@@ -51,6 +51,12 @@ impl Storage {
               start_at text not null,
               used_seconds integer not null
             );
+
+            create table if not exists hourly_bucket (
+              id integer primary key check (id = 1),
+              hour_stamp integer not null default 0,
+              used_seconds integer not null default 0
+            );
             "#,
         )?;
         Ok(())
@@ -99,35 +105,6 @@ impl Storage {
         self.upsert_daily_usage(day, &usage)
     }
 
-    pub fn increment_sessions_count(&self, day: NaiveDate) -> Result<()> {
-        let mut usage = self.get_daily_usage(day)?;
-        usage.sessions_count = usage.sessions_count.saturating_add(1);
-        self.upsert_daily_usage(day, &usage)
-    }
-
-    pub fn get_cooldown_end(&self) -> Result<Option<DateTime<Local>>> {
-        let mut stmt = self.conn.prepare("select ends_at from cooldown where id = 1")?;
-        let mut rows = stmt.query([])?;
-        if let Some(row) = rows.next()? {
-            let ends_at: String = row.get(0)?;
-            let parsed = DateTime::parse_from_rfc3339(&ends_at)
-                .map(|dt| dt.with_timezone(&Local))
-                .ok();
-            Ok(parsed)
-        } else {
-            Ok(None)
-        }
-    }
-
-    pub fn set_cooldown_end(&self, ends_at: DateTime<Local>) -> Result<()> {
-        self.conn.execute(
-            "insert into cooldown (id, ends_at) values (1, ?1)
-             on conflict(id) do update set ends_at = excluded.ends_at",
-            params![ends_at.to_rfc3339()],
-        )?;
-        Ok(())
-    }
-
     pub fn get_free_time_grant(&self, day: NaiveDate) -> Result<Option<bool>> {
         let day_str = day.format("%Y-%m-%d").to_string();
         let mut stmt = self.conn.prepare(
@@ -155,57 +132,30 @@ impl Storage {
         Ok(())
     }
 
-    pub fn save_current_session(&self, start_at: DateTime<Local>, used_seconds: u32) -> Result<()> {
-        self.conn.execute(
-            "insert into current_session (id, start_at, used_seconds) values (1, ?1, ?2)
-             on conflict(id) do update set start_at = excluded.start_at,
-                                           used_seconds = excluded.used_seconds",
-            params![start_at.to_rfc3339(), used_seconds as i64],
-        )?;
-        Ok(())
-    }
-
-    pub fn load_current_session(&self) -> Result<Option<(DateTime<Local>, u32)>> {
+    pub fn get_hourly_bucket(&self) -> Result<(u64, u32)> {
         let mut stmt = self.conn.prepare(
-            "select start_at, used_seconds from current_session where id = 1",
+            "select hour_stamp, used_seconds from hourly_bucket where id = 1",
         )?;
         let mut rows = stmt.query([])?;
         if let Some(row) = rows.next()? {
-            let start_at: String = row.get(0)?;
-            let used_seconds: i64 = row.get(1)?;
-            let parsed = DateTime::parse_from_rfc3339(&start_at)
-                .map(|dt| dt.with_timezone(&Local))
-                .ok();
-            Ok(parsed.map(|start| (start, used_seconds.max(0) as u32)))
+            let stamp: i64 = row.get(0)?;
+            let used: i64 = row.get(1)?;
+            Ok((stamp.max(0) as u64, used.max(0) as u32))
         } else {
-            Ok(None)
+            Ok((0, 0))
         }
     }
 
-    pub fn clear_current_session(&self) -> Result<()> {
-        self.conn.execute("delete from current_session where id = 1", [])?;
-        Ok(())
-    }
-
-    pub fn record_session(
-        &self,
-        start_at: DateTime<Local>,
-        end_at: DateTime<Local>,
-        duration_seconds: u32,
-        ended_by: &str,
-    ) -> Result<()> {
+    pub fn set_hourly_bucket(&self, hour_stamp: u64, used_seconds: u32) -> Result<()> {
         self.conn.execute(
-            "insert into sessions (start_at, end_at, duration_seconds, ended_by)
-             values (?1, ?2, ?3, ?4)",
-            params![
-                start_at.to_rfc3339(),
-                end_at.to_rfc3339(),
-                duration_seconds as i64,
-                ended_by
-            ],
+            "insert into hourly_bucket (id, hour_stamp, used_seconds) values (1, ?1, ?2)
+             on conflict(id) do update set hour_stamp = excluded.hour_stamp,
+                                           used_seconds = excluded.used_seconds",
+            params![hour_stamp as i64, used_seconds as i64],
         )?;
         Ok(())
     }
+
 }
 
 #[derive(Debug, Default, Clone)]

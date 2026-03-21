@@ -16,17 +16,22 @@ use browser_history::BrowserHistoryTracker;
 mod cdp_tracker;
 use cdp_tracker::{CdpTracker, DEFAULT_CDP_PORTS};
 
+mod aw_tracker;
+use aw_tracker::{AwTracker, DEFAULT_AW_BASE_URL, DEFAULT_WEB_BUCKET_PREFIX};
+
 mod enforcement;
 use enforcement::{DnsTestAssets, Enforcement};
 
 mod ipc_server;
 use ipc_server::IpcServer;
 
+mod firebase_sync;
+use firebase_sync::FirebaseSync;
 mod rules;
 mod storage;
 use storage::Storage;
 mod tracker;
-use tracker::SessionTracker;
+use tracker::HourlyTracker;
 
 fn main() -> Result<()> {
     // Daemon entrypoint (rule engine + enforcement).
@@ -71,7 +76,7 @@ fn main() -> Result<()> {
     let storage = Storage::open(&db_path)?;
     let now = chrono::Local::now();
     let usage = storage.get_daily_usage(now.date_naive())?;
-    let cooldown_end = storage.get_cooldown_end()?;
+    let hourly_tracker = HourlyTracker::restore_from_storage(&storage).unwrap_or_else(|_| HourlyTracker::new());
     let free_time_granted = storage
         .get_free_time_grant(now.date_naive())?
         .unwrap_or(false);
@@ -81,7 +86,7 @@ fn main() -> Result<()> {
         rules::RuleInputs {
             now,
             usage,
-            cooldown_end,
+            hourly_used_seconds: hourly_tracker.hourly_used_seconds(),
             free_time_granted,
         },
     )?;
@@ -113,6 +118,16 @@ fn main() -> Result<()> {
         run_cdp_tracking(&config, &storage, ports, &enforcement)?;
     }
 
+    if args.activitywatch_poll {
+        let base_url = args
+            .aw_base_url
+            .unwrap_or_else(|| DEFAULT_AW_BASE_URL.to_string());
+        let web_bucket_prefix = args
+            .aw_web_bucket_prefix
+            .unwrap_or_else(|| DEFAULT_WEB_BUCKET_PREFIX.to_string());
+        run_activitywatch_tracking(&config, &storage, base_url, web_bucket_prefix, &enforcement)?;
+    }
+
     if let Some(hit_stream) = args.hit_stream_path {
         run_live_tracking(&config, &storage, &hit_stream)?;
     }
@@ -130,6 +145,9 @@ struct Args {
     browser_profile_root: Option<PathBuf>,
     cdp_poll: bool,
     cdp_ports: Vec<u16>,
+    activitywatch_poll: bool,
+    aw_base_url: Option<String>,
+    aw_web_bucket_prefix: Option<String>,
     write_dns_test_assets_dir: Option<PathBuf>,
     unbound_blocklist_include_path: Option<String>,
     resolver_port: u16,
@@ -146,6 +164,9 @@ fn parse_args() -> Args {
     let mut browser_profile_root = None;
     let mut cdp_poll = false;
     let mut cdp_ports: Vec<u16> = Vec::new();
+    let mut activitywatch_poll = false;
+    let mut aw_base_url = None;
+    let mut aw_web_bucket_prefix = None;
     let mut write_dns_test_assets_dir = None;
     let mut unbound_blocklist_include_path = None;
     let mut resolver_port: u16 = 5335;
@@ -216,6 +237,19 @@ fn parse_args() -> Args {
                         .collect();
                 }
             }
+            "--activitywatch-poll" => {
+                activitywatch_poll = true;
+            }
+            "--aw-base-url" => {
+                if let Some(value) = args.next() {
+                    aw_base_url = Some(value);
+                }
+            }
+            "--aw-web-bucket-prefix" => {
+                if let Some(value) = args.next() {
+                    aw_web_bucket_prefix = Some(value);
+                }
+            }
             _ => {}
         }
     }
@@ -231,6 +265,9 @@ fn parse_args() -> Args {
         browser_profile_root,
         cdp_poll,
         cdp_ports,
+        activitywatch_poll,
+        aw_base_url,
+        aw_web_bucket_prefix,
         write_dns_test_assets_dir,
         unbound_blocklist_include_path,
         resolver_port,
@@ -294,22 +331,40 @@ fn parse_hhmm(value: &str) -> Result<u32> {
 }
 
 fn run_tracking_simulation(config: &Config, storage: &Storage) -> Result<()> {
-    let mut tracker = SessionTracker::new();
+    let mut tracker = HourlyTracker::new();
     let mut now = chrono::Local::now();
 
     // Simulate 5 minutes on-target, 2 minutes idle, 6 minutes on-target.
+    // With hourly buckets the 2-minute break does NOT reset the counter.
     for _ in 0..300 {
-        tracker.tick(config, storage, now, true, 1)?;
+        tracker.tick(storage, now, true, 1)?;
         now = now + chrono::Duration::seconds(1);
     }
     for _ in 0..120 {
-        tracker.tick(config, storage, now, false, 1)?;
+        tracker.tick(storage, now, false, 1)?;
         now = now + chrono::Duration::seconds(1);
     }
     for _ in 0..360 {
-        tracker.tick(config, storage, now, true, 1)?;
+        tracker.tick(storage, now, true, 1)?;
         now = now + chrono::Duration::seconds(1);
     }
+
+    let usage = storage.get_daily_usage(now.date_naive())?;
+    let result = rules::evaluate(
+        config,
+        rules::RuleInputs {
+            now,
+            usage,
+            hourly_used_seconds: tracker.hourly_used_seconds(),
+            free_time_granted: false,
+        },
+    )?;
+    println!(
+        "simulation done: hourly_used={}s, daily_used={}s, state={:?}",
+        tracker.hourly_used_seconds(),
+        result.daily_used_seconds,
+        result.state,
+    );
     Ok(())
 }
 
@@ -343,7 +398,7 @@ fn run_live_tracking(config: &Config, storage: &Storage, hit_stream: &PathBuf) -
         }
     });
 
-    let mut tracker = SessionTracker::new();
+    let mut tracker = HourlyTracker::new();
     let mut active_until: Option<chrono::DateTime<chrono::Local>> = None;
     let mut tick_count: u64 = 0;
 
@@ -356,7 +411,7 @@ fn run_live_tracking(config: &Config, storage: &Storage, hit_stream: &PathBuf) -
         }
 
         let on_target = active_until.map(|t| t > now).unwrap_or(false);
-        tracker.tick(config, storage, now, on_target, 1)?;
+        tracker.tick(storage, now, on_target, 1)?;
 
         tick_count += 1;
         if tick_count % 10 == 0 {
@@ -386,8 +441,8 @@ fn run_browser_history_tracking(
     let ipc = IpcServer::bind(Path::new("/run/focusforlife/daemon.sock"))?;
     println!("IPC socket bound at /run/focusforlife/daemon.sock");
 
-    let mut tracker = SessionTracker::restore_from_storage(storage).unwrap_or_else(|_| SessionTracker::new());
-    println!("session restored: used={}s", tracker.used_in_session());
+    let mut tracker = HourlyTracker::restore_from_storage(storage).unwrap_or_else(|_| HourlyTracker::new());
+    println!("hourly bucket restored: used={}s", tracker.hourly_used_seconds());
     let mut active_until: Option<chrono::DateTime<chrono::Local>> = None;
     let mut tick_count: u64 = 0;
     // None = not yet applied; Some(true) = blocklist active; Some(false) = blocklist cleared.
@@ -403,13 +458,12 @@ fn run_browser_history_tracking(
 
         // Evaluate current rule state from persistent storage.
         let usage = storage.get_daily_usage(now.date_naive())?;
-        let cooldown_end = storage.get_cooldown_end()?;
         let free_time_granted = storage
             .get_free_time_grant(now.date_naive())?
             .unwrap_or(false);
         let result = rules::evaluate(
             config,
-            rules::RuleInputs { now, usage, cooldown_end, free_time_granted },
+            rules::RuleInputs { now, usage, hourly_used_seconds: tracker.hourly_used_seconds(), free_time_granted },
         )?;
         let is_blocked = !matches!(result.state, ffl_shared::ipc::FocusState::Allowed);
 
@@ -434,9 +488,8 @@ fn run_browser_history_tracking(
         }
 
         // Only count time on blocked sites when access is currently allowed.
-        // This prevents failed navigation attempts (DNS-blocked) from ticking the timer.
         let on_target = !is_blocked && active_until.map(|t| t > now).unwrap_or(false);
-        tracker.tick(config, storage, now, on_target, 1)?;
+        tracker.tick(storage, now, on_target, 1)?;
 
         // Broadcast status snapshot every 2 ticks.
         if tick_count % 2 == 0 {
@@ -449,7 +502,7 @@ fn run_browser_history_tracking(
         tick_count += 1;
         if tick_count % 10 == 0 {
             let usage = storage.get_daily_usage(now.date_naive())?;
-            println!("history-tracking... used={}s on_target={} blocked={}", usage.used_seconds, on_target, is_blocked);
+            println!("history-tracking... used={}s hourly={}s on_target={} blocked={}", usage.used_seconds, tracker.hourly_used_seconds(), on_target, is_blocked);
         }
         thread::sleep(Duration::from_secs(1));
     }
@@ -471,8 +524,8 @@ fn run_cdp_tracking(
     let ipc = IpcServer::bind(Path::new("/run/focusforlife/daemon.sock"))?;
     println!("IPC socket bound at /run/focusforlife/daemon.sock");
 
-    let mut tracker = SessionTracker::restore_from_storage(storage).unwrap_or_else(|_| SessionTracker::new());
-    println!("session restored: used={}s", tracker.used_in_session());
+    let mut tracker = HourlyTracker::restore_from_storage(storage).unwrap_or_else(|_| HourlyTracker::new());
+    println!("hourly bucket restored: used={}s", tracker.hourly_used_seconds());
     let mut tick_count: u64 = 0;
     let mut last_blocked: Option<bool> = None;
 
@@ -486,13 +539,12 @@ fn run_cdp_tracking(
             .any(|d| domain_matches_blocked(d, &domain_set));
 
         let usage = storage.get_daily_usage(now.date_naive())?;
-        let cooldown_end = storage.get_cooldown_end()?;
         let free_time_granted = storage
             .get_free_time_grant(now.date_naive())?
             .unwrap_or(false);
         let result = rules::evaluate(
             config,
-            rules::RuleInputs { now, usage, cooldown_end, free_time_granted },
+            rules::RuleInputs { now, usage, hourly_used_seconds: tracker.hourly_used_seconds(), free_time_granted },
         )?;
         let is_blocked = !matches!(result.state, ffl_shared::ipc::FocusState::Allowed);
 
@@ -517,7 +569,7 @@ fn run_cdp_tracking(
 
         // Only count time when access is allowed and a blocked site is open right now.
         let on_target = !is_blocked && on_target_cdp;
-        tracker.tick(config, storage, now, on_target, 1)?;
+        tracker.tick(storage, now, on_target, 1)?;
 
         if tick_count % 2 == 0 {
             broadcast_status(config, storage, &tracker, now, &ipc);
@@ -528,7 +580,125 @@ fn run_cdp_tracking(
         tick_count += 1;
         if tick_count % 10 == 0 {
             let usage = storage.get_daily_usage(now.date_naive())?;
-            println!("cdp-tracking... used={}s on_target={} blocked={}", usage.used_seconds, on_target, is_blocked);
+            println!("cdp-tracking... used={}s hourly={}s on_target={} blocked={}", usage.used_seconds, tracker.hourly_used_seconds(), on_target, is_blocked);
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+}
+
+fn run_activitywatch_tracking(
+    config: &Config,
+    storage: &Storage,
+    base_url: String,
+    web_bucket_prefix: String,
+    enforcement: &Enforcement,
+) -> Result<()> {
+    let domains = load_domain_list(&PathBuf::from("/etc/focusforlife/blocked-domains.txt")).unwrap_or_default();
+    let domain_set: std::collections::HashSet<String> = domains.iter().cloned().collect();
+    let mut aw = AwTracker::new(base_url, web_bucket_prefix);
+
+    println!("ActivityWatch tracking active (focused-tab only — background tabs ignored)");
+
+    fs::create_dir_all("/run/focusforlife")?;
+    let ipc = IpcServer::bind(Path::new("/run/focusforlife/daemon.sock"))?;
+    println!("IPC socket bound at /run/focusforlife/daemon.sock");
+
+    let mut tracker = HourlyTracker::restore_from_storage(storage).unwrap_or_else(|_| HourlyTracker::new());
+    println!("hourly bucket restored: used={}s", tracker.hourly_used_seconds());
+
+    let mut sync = FirebaseSync::new(&config.sync);
+    if sync.is_some() {
+        println!("firebase sync enabled: device={}, interval={}s", config.sync.device_id, config.sync.sync_interval_seconds);
+    }
+
+    let mut tick_count: u64 = 0;
+    let mut last_blocked: Option<bool> = None;
+
+    loop {
+        let now = chrono::Local::now();
+        let today = now.format("%Y-%m-%d").to_string();
+
+        // Ask AW which domain is *currently focused*.
+        let focused_domain = aw.focused_domain();
+        let on_target_aw = focused_domain
+            .as_deref()
+            .map(|d| domain_matches_blocked(d, &domain_set))
+            .unwrap_or(false);
+
+        // Sync with Firebase if enabled and interval elapsed.
+        if let Some(ref mut fb) = sync {
+            if fb.should_sync() {
+                let usage = storage.get_daily_usage(now.date_naive())?;
+                fb.sync(
+                    usage.used_seconds,
+                    tracker.hourly_used_seconds(),
+                    tracker.current_hour_stamp(),
+                    &today,
+                );
+            }
+        }
+
+        // Compute combined usage (local + remote).
+        let usage = storage.get_daily_usage(now.date_naive())?;
+        let remote = sync.as_ref().map(|fb| fb.last_remote());
+        let combined_daily = usage.used_seconds.saturating_add(remote.map_or(0, |r| r.daily_seconds));
+        let combined_hourly = tracker.hourly_used_seconds().saturating_add(remote.map_or(0, |r| r.hourly_used_seconds));
+
+        let free_time_granted = storage
+            .get_free_time_grant(now.date_naive())?
+            .unwrap_or(false);
+        let result = rules::evaluate(
+            config,
+            rules::RuleInputs {
+                now,
+                usage: storage::DailyUsage { used_seconds: combined_daily, sessions_count: usage.sessions_count },
+                hourly_used_seconds: combined_hourly,
+                free_time_granted,
+            },
+        )?;
+        let is_blocked = !matches!(result.state, ffl_shared::ipc::FocusState::Allowed);
+
+        if last_blocked != Some(is_blocked) {
+            if is_blocked {
+                println!("enforcement: applying blocklist ({} domains, state={:?})", domains.len(), result.state);
+                if let Err(e) = enforcement.apply_blocklist(&domains) {
+                    eprintln!("failed to apply blocklist: {e}");
+                } else if let Err(e) = enforcement.reload_unbound() {
+                    eprintln!("failed to reload unbound: {e}");
+                }
+            } else {
+                println!("enforcement: clearing blocklist (state=allowed)");
+                if let Err(e) = enforcement.apply_blocklist(&[]) {
+                    eprintln!("failed to clear blocklist: {e}");
+                } else if let Err(e) = enforcement.reload_unbound() {
+                    eprintln!("failed to reload unbound: {e}");
+                }
+            }
+            last_blocked = Some(is_blocked);
+        }
+
+        // Only count time when the user is allowed AND the *focused* tab is banned.
+        let on_target = !is_blocked && on_target_aw;
+        tracker.tick(storage, now, on_target, 1)?;
+
+        if tick_count % 2 == 0 {
+            broadcast_status_combined(config, combined_daily, combined_hourly, &tracker, now, &ipc);
+        }
+
+        handle_free_time_prompt(config, storage, now, &ipc)?;
+
+        tick_count += 1;
+        if tick_count % 10 == 0 {
+            println!(
+                "aw-tracking... daily={}s(+{}s remote) hourly={}s(+{}s remote) focused={} on_target={} blocked={}",
+                usage.used_seconds,
+                remote.map_or(0, |r| r.daily_seconds),
+                tracker.hourly_used_seconds(),
+                remote.map_or(0, |r| r.hourly_used_seconds),
+                focused_domain.as_deref().unwrap_or("none"),
+                on_target,
+                is_blocked,
+            );
         }
         thread::sleep(Duration::from_secs(1));
     }
@@ -537,12 +707,11 @@ fn run_cdp_tracking(
 fn broadcast_status(
     config: &Config,
     storage: &Storage,
-    tracker: &SessionTracker,
+    tracker: &HourlyTracker,
     now: chrono::DateTime<chrono::Local>,
     ipc: &IpcServer,
 ) {
     let Ok(usage) = storage.get_daily_usage(now.date_naive()) else { return };
-    let Ok(cooldown_end) = storage.get_cooldown_end() else { return };
     let free_time_granted = storage
         .get_free_time_grant(now.date_naive())
         .ok()
@@ -550,15 +719,48 @@ fn broadcast_status(
         .unwrap_or(false);
     let Ok(result) = rules::evaluate(
         config,
-        rules::RuleInputs { now, usage, cooldown_end, free_time_granted },
+        rules::RuleInputs { now, usage, hourly_used_seconds: tracker.hourly_used_seconds(), free_time_granted },
     ) else { return };
     let snap = StatusSnapshot {
         state: result.state,
         daily_used_seconds: result.daily_used_seconds,
         daily_quota_seconds: result.daily_quota_seconds,
-        session_used_seconds: tracker.used_in_session(),
-        session_limit_seconds: config.rules.continuous_limit_minutes * 60,
+        hourly_used_seconds: tracker.hourly_used_seconds(),
+        hourly_limit_seconds: config.rules.hourly_limit_minutes * 60,
         cooldown_remaining_seconds: result.cooldown_remaining_seconds,
+    };
+    ipc.broadcast(&DaemonEvent::Status(snap)).ok();
+}
+
+fn broadcast_status_combined(
+    config: &Config,
+    combined_daily: u32,
+    combined_hourly: u32,
+    _tracker: &HourlyTracker,
+    now: chrono::DateTime<chrono::Local>,
+    ipc: &IpcServer,
+) {
+    let hourly_limit_seconds = config.rules.hourly_limit_minutes * 60;
+    let daily_quota_seconds = config.rules.daily_quota_minutes * 60;
+    let state = if combined_daily >= daily_quota_seconds {
+        ffl_shared::ipc::FocusState::BlockedQuota
+    } else if combined_hourly >= hourly_limit_seconds {
+        ffl_shared::ipc::FocusState::BlockedCooldown
+    } else {
+        ffl_shared::ipc::FocusState::Allowed
+    };
+    let cooldown_remaining = if combined_hourly >= hourly_limit_seconds {
+        crate::tracker::seconds_until_next_hour(now)
+    } else {
+        0
+    };
+    let snap = StatusSnapshot {
+        state,
+        daily_used_seconds: combined_daily,
+        daily_quota_seconds,
+        hourly_used_seconds: combined_hourly,
+        hourly_limit_seconds,
+        cooldown_remaining_seconds: cooldown_remaining,
     };
     ipc.broadcast(&DaemonEvent::Status(snap)).ok();
 }

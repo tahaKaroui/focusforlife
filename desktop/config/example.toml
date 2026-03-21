@@ -1,8 +1,6 @@
 [rules]
 daily_quota_minutes = 60
-continuous_limit_minutes = 10
-cooldown_minutes = 60
-idle_tolerance_seconds = 90
+hourly_limit_minutes = 10
 activity_grace_seconds = 30
 
 [windows.hard_block]
@@ -21,6 +19,11 @@ end = "16:00"
 free_time_evening_prompt = "default_yes"
 free_time_break_prompt = "default_yes"
 prompt_timeout_seconds = 60
+
+[sync]
+firebase_db_url = "https://YOUR-PROJECT-default-rtdb.YOUR-REGION.firebasedatabase.app"
+device_id = "linux"
+sync_interval_seconds = 10
 
 [logging]
 level = "info"

@@ -1199,6 +1199,7 @@ dependencies = [
  "chrono",
  "ffl-shared",
  "rusqlite",
+ "serde",
  "serde_json",
  "toml",
  "ureq",

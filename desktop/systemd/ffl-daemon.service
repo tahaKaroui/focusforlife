@@ -5,7 +5,7 @@ Wants=network-online.target ffl-resolver.service ffl-firewall.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/ffl-daemon --config /etc/focusforlife/config.toml --cdp-poll
+ExecStart=/usr/local/bin/ffl-daemon --config /etc/focusforlife/config.toml --activitywatch-poll
 Restart=always
 RestartSec=2
 RuntimeDirectory=focusforlife

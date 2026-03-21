@@ -4,12 +4,13 @@ use ffl_shared::config::Config;
 use ffl_shared::ipc::FocusState;
 
 use crate::storage::DailyUsage;
+use crate::tracker::seconds_until_next_hour;
 
 #[derive(Debug, Clone)]
 pub struct RuleInputs {
     pub now: DateTime<Local>,
     pub usage: DailyUsage,
-    pub cooldown_end: Option<DateTime<Local>>,
+    pub hourly_used_seconds: u32,
     pub free_time_granted: bool,
 }
 
@@ -24,7 +25,9 @@ pub struct RuleResult {
 pub fn evaluate(config: &Config, input: RuleInputs) -> Result<RuleResult> {
     let daily_quota_seconds = config.rules.daily_quota_minutes * 60;
     let daily_used_seconds = input.usage.used_seconds;
+    let hourly_limit_seconds = config.rules.hourly_limit_minutes * 60;
 
+    // 1. Hard block window (sleep time).
     let hard_block = in_window(&config.windows.hard_block, input.now)?;
     if hard_block {
         return Ok(RuleResult {
@@ -35,19 +38,7 @@ pub fn evaluate(config: &Config, input: RuleInputs) -> Result<RuleResult> {
         });
     }
 
-    let now = input.now;
-    if let Some(end) = input.cooldown_end {
-        if end > now {
-            let remaining = (end - now).num_seconds().max(0) as u32;
-            return Ok(RuleResult {
-                state: FocusState::BlockedCooldown,
-                daily_quota_seconds,
-                daily_used_seconds,
-                cooldown_remaining_seconds: remaining,
-            });
-        }
-    }
-
+    // 2. Daily quota exhausted.
     if daily_used_seconds >= daily_quota_seconds {
         return Ok(RuleResult {
             state: FocusState::BlockedQuota,
@@ -57,7 +48,18 @@ pub fn evaluate(config: &Config, input: RuleInputs) -> Result<RuleResult> {
         });
     }
 
-    // During a granted free-time window, quota is suspended (user acknowledged the break).
+    // 3. Hourly limit hit — cooldown until next hour boundary.
+    if input.hourly_used_seconds >= hourly_limit_seconds {
+        let remaining = seconds_until_next_hour(input.now);
+        return Ok(RuleResult {
+            state: FocusState::BlockedCooldown,
+            daily_quota_seconds,
+            daily_used_seconds,
+            cooldown_remaining_seconds: remaining,
+        });
+    }
+
+    // 4. During a granted free-time window, quota is suspended.
     let in_free_time = in_window(&config.windows.free_time_evening, input.now)?
         || in_window(&config.windows.free_time_break, input.now)?;
     if in_free_time && input.free_time_granted {

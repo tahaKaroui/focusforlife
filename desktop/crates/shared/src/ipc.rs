@@ -18,8 +18,8 @@ pub struct StatusSnapshot {
     pub state: FocusState,
     pub daily_used_seconds: u32,
     pub daily_quota_seconds: u32,
-    pub session_used_seconds: u32,
-    pub session_limit_seconds: u32,
+    pub hourly_used_seconds: u32,
+    pub hourly_limit_seconds: u32,
     pub cooldown_remaining_seconds: u32,
 }
 

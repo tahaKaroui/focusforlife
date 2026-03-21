@@ -129,12 +129,12 @@ impl eframe::App for FflApp {
                         daily_rem % 60
                     ));
 
-                    let sess_rem =
-                        snap.session_limit_seconds.saturating_sub(snap.session_used_seconds);
+                    let hourly_rem =
+                        snap.hourly_limit_seconds.saturating_sub(snap.hourly_used_seconds);
                     ui.label(format!(
-                        "Session remaining: {}m {}s",
-                        sess_rem / 60,
-                        sess_rem % 60
+                        "Hourly remaining: {}m {}s",
+                        hourly_rem / 60,
+                        hourly_rem % 60
                     ));
 
                     if snap.cooldown_remaining_seconds > 0 {

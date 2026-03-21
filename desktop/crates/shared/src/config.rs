@@ -6,18 +6,36 @@ pub struct Config {
     pub windows: Windows,
     pub prompts: Prompts,
     pub logging: Logging,
+    #[serde(default)]
+    pub sync: Sync,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Sync {
+    /// Firebase Realtime Database URL.
+    pub firebase_db_url: String,
+    /// This device's ID (e.g., "linux", "windows").
+    pub device_id: String,
+    /// How often to push/pull sync state (seconds).
+    pub sync_interval_seconds: u32,
+}
+
+impl Default for Sync {
+    fn default() -> Self {
+        Self {
+            firebase_db_url: String::new(),
+            device_id: "linux".to_string(),
+            sync_interval_seconds: 10,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rules {
     /// Daily quota across all blocked targets (minutes).
     pub daily_quota_minutes: u32,
-    /// Continuous limit before cooldown (minutes).
-    pub continuous_limit_minutes: u32,
-    /// Cooldown duration after continuous limit (minutes).
-    pub cooldown_minutes: u32,
-    /// Idle tolerance before ending a session (seconds).
-    pub idle_tolerance_seconds: u32,
+    /// Per-hour usage limit before cooldown until next hour (minutes).
+    pub hourly_limit_minutes: u32,
     /// Grace window after a hit to consider user "on target" (seconds).
     pub activity_grace_seconds: u32,
 }
@@ -72,9 +90,7 @@ impl Default for Config {
         Self {
             rules: Rules {
                 daily_quota_minutes: 60,
-                continuous_limit_minutes: 10,
-                cooldown_minutes: 60,
-                idle_tolerance_seconds: 90,
+                hourly_limit_minutes: 10,
                 activity_grace_seconds: 30,
             },
             windows: Windows {
@@ -98,6 +114,11 @@ impl Default for Config {
             },
             logging: Logging {
                 level: "info".to_string(),
+            },
+            sync: Sync {
+                firebase_db_url: String::new(),
+                device_id: "linux".to_string(),
+                sync_interval_seconds: 10,
             },
         }
     }
