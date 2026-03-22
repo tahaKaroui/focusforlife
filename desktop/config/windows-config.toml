@@ -1,0 +1,29 @@
+[rules]
+daily_quota_minutes = 60
+hourly_limit_minutes = 10
+activity_grace_seconds = 30
+
+[windows.hard_block]
+start = "23:30"
+end = "11:00"
+
+[windows.free_time_evening]
+start = "21:00"
+end = "23:30"
+
+[windows.free_time_break]
+start = "15:00"
+end = "16:00"
+
+[prompts]
+free_time_evening_prompt = "default_yes"
+free_time_break_prompt = "default_yes"
+prompt_timeout_seconds = 60
+
+[sync]
+firebase_db_url = "https://YOUR-PROJECT-default-rtdb.YOUR-REGION.firebasedatabase.app"
+device_id = "windows"
+sync_interval_seconds = 10
+
+[logging]
+level = "info"

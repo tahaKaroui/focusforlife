@@ -3,6 +3,7 @@ members = [
   "crates/daemon",
   "crates/ui",
   "crates/shared",
-  "crates/watcher"
+  "crates/watcher",
+  "crates/windows-daemon",
 ]
 resolver = "2"
