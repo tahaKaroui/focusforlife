@@ -596,8 +596,10 @@ fn run_activitywatch_tracking(
     let domains = load_domain_list(&PathBuf::from("/etc/focusforlife/blocked-domains.txt")).unwrap_or_default();
     let domain_set: std::collections::HashSet<String> = domains.iter().cloned().collect();
     let mut aw = AwTracker::new(base_url, web_bucket_prefix);
+    let cdp = CdpTracker::new(DEFAULT_CDP_PORTS.to_vec());
 
     println!("ActivityWatch tracking active (focused-tab only — background tabs ignored)");
+    println!("CDP fallback active on ports: {:?}", DEFAULT_CDP_PORTS);
 
     fs::create_dir_all("/run/focusforlife")?;
     let ipc = IpcServer::bind(Path::new("/run/focusforlife/daemon.sock"))?;
@@ -618,8 +620,15 @@ fn run_activitywatch_tracking(
         let now = chrono::Local::now();
         let today = now.format("%Y-%m-%d").to_string();
 
-        // Ask AW which domain is *currently focused*.
-        let focused_domain = aw.focused_domain();
+        // Ask AW which domain is *currently focused* (primary).
+        // Fall back to CDP + xdotool if AW extension is not active.
+        let (focused_domain, tracking_source) = if let Some(d) = aw.focused_domain() {
+            (Some(d), "aw")
+        } else if let Some(d) = cdp.focused_domain() {
+            (Some(d), "cdp")
+        } else {
+            (None, "none")
+        };
         let on_target_aw = focused_domain
             .as_deref()
             .map(|d| domain_matches_blocked(d, &domain_set))
@@ -690,12 +699,13 @@ fn run_activitywatch_tracking(
         tick_count += 1;
         if tick_count % 10 == 0 {
             println!(
-                "aw-tracking... daily={}s(+{}s remote) hourly={}s(+{}s remote) focused={} on_target={} blocked={}",
+                "tracking... daily={}s(+{}s remote) hourly={}s(+{}s remote) focused={}[{}] on_target={} blocked={}",
                 usage.used_seconds,
                 remote.map_or(0, |r| r.daily_seconds),
                 tracker.hourly_used_seconds(),
                 remote.map_or(0, |r| r.hourly_used_seconds),
                 focused_domain.as_deref().unwrap_or("none"),
+                tracking_source,
                 on_target,
                 is_blocked,
             );
