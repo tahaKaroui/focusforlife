@@ -57,6 +57,7 @@ object FocusTargets {
     )
 
     val browserPackages: List<String> = listOf(
+        "com.facebook.orca",
         "com.brave.browser",
         "com.brave.browser_beta",
         "com.brave.browser_dev",

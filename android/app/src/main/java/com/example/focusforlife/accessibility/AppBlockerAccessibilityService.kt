@@ -34,6 +34,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     private var activeBrowserDomain: String? = null
     private var activeBrowserPackage: String? = null
     private var lastBrowserTimestamp: Long = 0L
+    private var lastUrlCheckMs: Long = 0L
     private val usageHandler = Handler(Looper.getMainLooper())
     private val usageRunnable = object : Runnable {
         override fun run() {
@@ -46,6 +47,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         FocusLogger.init(this)
         FocusRules.ensureFreshDay(this)
         com.example.focusforlife.core.FocusSync.startListening()
+        com.example.focusforlife.services.FocusForegroundNotifications.cancelAccessibilityAlert(this)
         FocusLogger.i("Accessibility service connected")
     }
 
@@ -86,10 +88,23 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         }
 
         if (browserPackages.contains(packageName)) {
-            val blockedDomain = extractBlockedDomain(packageName)
-            updateBrowserTracking(packageName, blockedDomain)
+            val isHighFreqEvent = eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+            val now = System.currentTimeMillis()
+            val shouldCheckUrl = !isHighFreqEvent || (now - lastUrlCheckMs >= URL_CHECK_INTERVAL_MS)
+            if (shouldCheckUrl) {
+                lastUrlCheckMs = now
+            }
+            val blockedDomain = if (shouldCheckUrl) extractBlockedDomain(packageName) else null
+            if (blockedDomain != null || !isHighFreqEvent) {
+                updateBrowserTracking(packageName, blockedDomain)
+            }
         } else if (activeBrowserDomain != null && packageName != activeBrowserPackage) {
-            finalizeBrowserUsage()
+            // Use the actual root window to decide — during fullscreen the browser is
+            // still the root even if system packages fire events alongside it.
+            val rootPkg = rootInActiveWindow?.packageName?.toString()
+            if (rootPkg == null || !browserPackages.contains(rootPkg)) {
+                finalizeBrowserUsage()
+            }
         }
 
         if (!blockedApps.contains(packageName)) {
@@ -171,6 +186,32 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         }
 
         reconcileForegroundFromRoot()
+
+        // Defeat the "minimize into a MIUI floating/freeform window" bypass: rootInActiveWindow
+        // only sees the focused window, so a blocked app/site shoved into a small window keeps
+        // playing. Once over quota, scan ALL visible windows and kick if a blocked target is up.
+        if (shouldBlockNow() && isBlockedTargetVisibleAcrossWindows()) {
+            finalizeActiveUsage()
+            finalizeBrowserUsage()
+            FocusLogger.i("Blocking via cross-window scan (floating/minimized target)")
+            blockNow()
+        }
+    }
+
+    /** True if any visible window (not just the active one) shows a blocked app or domain. */
+    private fun isBlockedTargetVisibleAcrossWindows(): Boolean {
+        val wins = try { windows } catch (e: Exception) { null } ?: return false
+        for (w in wins) {
+            val root = w.root ?: continue
+            val pkg = root.packageName?.toString() ?: continue
+            if (blockedApps.contains(pkg)) return true
+            if (browserPackages.contains(pkg)) {
+                val urlText = findUrlText(root, pkg)?.trim()
+                val domain = urlText?.let { extractDomain(it) }
+                if (domain != null && FocusTargets.matchesBlockedDomain(domain)) return true
+            }
+        }
+        return false
     }
 
     private fun finalizeActiveUsage() {
@@ -219,6 +260,12 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
     private fun updateBrowserTracking(packageName: String, blockedDomain: String?) {
         if (blockedDomain == null) {
+            // If we're still in the same browser package, the URL bar is temporarily
+            // hidden (e.g. fullscreen video). Keep tracking the last known blocked domain
+            // so fullscreen YouTube/Instagram can't bypass the timer.
+            if (activeBrowserDomain != null && activeBrowserPackage == packageName) {
+                return
+            }
             if (activeBrowserDomain != null) {
                 finalizeBrowserUsage()
             }
@@ -431,11 +478,10 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
         if (!blockedApps.contains(rootPackage)) {
             if (activePackage != null) {
-                if (isTransientPackage(rootPackage)) {
-                    schedulePendingStop()
-                } else {
-                    finalizeActiveUsage()
-                }
+                // Always use a pending stop (grace period) rather than immediately
+                // finalizing — MIUI overlays and notification peeks frequently appear
+                // as the root window for one tick and would otherwise kill the timer.
+                schedulePendingStop()
             }
             return
         }
@@ -476,16 +522,34 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     }
 
     private fun findUrlText(root: AccessibilityNodeInfo, packageName: String): String? {
-        val viewId = "$packageName:id/url_bar"
-        val nodes = root.findAccessibilityNodeInfosByViewId(viewId)
-        if (!nodes.isNullOrEmpty()) {
-            val text = nodes.firstOrNull()?.text?.toString()
-            if (!text.isNullOrBlank()) return text
+        // "web_bottom_url" is Mi Browser's bottom omnibox (shows e.g. "m.youtube.com").
+        // Looking it up by id is O(1) and not subject to the depth cap in findUrlInTree.
+        listOf(
+            "url_bar", "omnibox_url_bar", "url_field", "url_text",
+            "web_bottom_url", "web_bottom_url_click"
+        ).forEach { id ->
+            val nodes = root.findAccessibilityNodeInfosByViewId("$packageName:id/$id")
+            if (!nodes.isNullOrEmpty()) {
+                val text = nodes.firstOrNull()?.text?.toString()
+                if (!text.isNullOrBlank()) return text
+            }
         }
-        val fallback = root.findAccessibilityNodeInfosByViewId("$packageName:id/omnibox_url_bar")
-        if (!fallback.isNullOrEmpty()) {
-            val text = fallback.firstOrNull()?.text?.toString()
-            if (!text.isNullOrBlank()) return text
+        return findUrlInTree(root, 0)
+    }
+
+    private fun findUrlInTree(node: AccessibilityNodeInfo, depth: Int): String? {
+        if (depth > 10) return null
+        val cls = node.className?.toString()
+        if (cls == "android.widget.EditText" || cls == "android.widget.TextView") {
+            val text = node.text?.toString()
+            if (!text.isNullOrBlank()) {
+                val domain = extractDomain(text)
+                if (domain != null && FocusTargets.matchesBlockedDomain(domain)) return text
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val result = findUrlInTree(node.getChild(i) ?: continue, depth + 1)
+            if (result != null) return result
         }
         return null
     }
@@ -493,6 +557,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     companion object {
         private const val USAGE_TICK_MS = 1_000L
         private const val PENDING_STOP_GRACE_MS = 1_800L
+        private const val URL_CHECK_INTERVAL_MS = 500L
         private val TRANSIENT_PACKAGES = setOf(
             "com.android.systemui",
             "miui.systemui.plugin",
