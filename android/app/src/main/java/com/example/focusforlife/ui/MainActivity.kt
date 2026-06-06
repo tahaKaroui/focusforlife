@@ -5,10 +5,12 @@ import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.text.TextUtils
 import android.widget.Toast
@@ -113,6 +115,7 @@ class MainActivity : ComponentActivity() {
         refreshDashboard()
         DeviceOwnerController.applyPolicies(this)
         DeviceOwnerController.enforceLockTask(this)
+        ensureBootSurvivalSetup()
     }
 
     @Deprecated(
@@ -342,6 +345,57 @@ class MainActivity : ComponentActivity() {
         FocusLogger.i("Disable executed: VPN + overlay stopped")
         toast("VPN + overlay stopped. Disable accessibility manually if needed.")
         refreshDashboard()
+    }
+
+    private fun ensureBootSurvivalSetup() {
+        val prefs = getSharedPreferences("ffl_setup", Context.MODE_PRIVATE)
+        val batteryDone = prefs.getBoolean("battery_opt_done", false)
+        val miuiDone = prefs.getBoolean("miui_autostart_done", false)
+
+        if (!batteryDone && !isBatteryOptimizationIgnored()) {
+            requestBatteryOptimizationIgnore()
+            prefs.edit().putBoolean("battery_opt_done", true).apply()
+        }
+
+        if (!miuiDone && isMiui()) {
+            openMiuiAutostart()
+            prefs.edit().putBoolean("miui_autostart_done", true).apply()
+        }
+    }
+
+    private fun isBatteryOptimizationIgnored(): Boolean {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        return pm.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    private fun requestBatteryOptimizationIgnore() {
+        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            data = Uri.parse("package:$packageName")
+        }
+        startActivity(intent)
+    }
+
+    private fun isMiui(): Boolean {
+        return try {
+            packageManager.getPackageInfo("com.miui.securitycenter", 0)
+            true
+        } catch (e: PackageManager.NameNotFoundException) {
+            false
+        }
+    }
+
+    private fun openMiuiAutostart() {
+        val intent = Intent().apply {
+            component = ComponentName(
+                "com.miui.securitycenter",
+                "com.miui.permcenter.autostart.AutoStartManagementActivity"
+            )
+        }
+        try {
+            startActivity(intent)
+        } catch (e: Exception) {
+            FocusLogger.w("MIUI autostart page not available: ${e.message}")
+        }
     }
 
     private fun toast(message: String) {

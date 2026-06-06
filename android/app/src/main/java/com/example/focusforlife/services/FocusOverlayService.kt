@@ -30,9 +30,11 @@ class FocusOverlayService : Service() {
     private var stopRequested = false
     private var started = false
     private val handler = Handler(Looper.getMainLooper())
+    private var accessibilityCheckTick = 0
     private val updateRunnable = object : Runnable {
         override fun run() {
             updateOverlay()
+            checkAccessibilityPeriodically()
             handler.postDelayed(this, 1_000L)
         }
     }
@@ -123,6 +125,21 @@ class FocusOverlayService : Service() {
         overlayParams = null
     }
 
+    private fun checkAccessibilityPeriodically() {
+        accessibilityCheckTick++
+        if (accessibilityCheckTick < 60) return
+        accessibilityCheckTick = 0
+        if (!AccessibilityUtils.isServiceEnabled(this)) {
+            val fixed = AccessibilityUtils.ensureServiceEnabled(this)
+            if (!fixed) {
+                FocusLogger.w("Accessibility service not enabled and cannot auto-fix — alerting user")
+                FocusForegroundNotifications.postAccessibilityDisabledAlert(this)
+            }
+        } else {
+            FocusForegroundNotifications.cancelAccessibilityAlert(this)
+        }
+    }
+
     private fun updateOverlay() {
         val view = overlayView ?: return
         FocusRules.ensureFreshDay(this)
@@ -130,7 +147,7 @@ class FocusOverlayService : Service() {
         val dailyLeft = FocusRules.remainingSeconds(this)
         val bubbleLabel = view.findViewById<TextView>(R.id.overlayBubbleLabel)
         val bubbleTime = view.findViewById<TextView>(R.id.overlayBubbleTime)
-        bubbleLabel.text = "HOUR"
+        bubbleLabel.text = format(dailyLeft)
         bubbleTime.text = format(hourlyLeft)
 
         view.findViewById<TextView>(R.id.overlayTitle).text = "TIME LEFT"
