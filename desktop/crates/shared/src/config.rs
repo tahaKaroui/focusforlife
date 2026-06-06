@@ -14,6 +14,15 @@ pub struct Config {
 pub struct Sync {
     /// Firebase Realtime Database URL.
     pub firebase_db_url: String,
+    /// Firebase Web API key (used for the REST auth endpoints).
+    #[serde(default)]
+    pub firebase_api_key: String,
+    /// Email of the shared Firebase account every device signs in with.
+    #[serde(default)]
+    pub firebase_email: String,
+    /// Password for the shared Firebase account.
+    #[serde(default)]
+    pub firebase_password: String,
     /// This device's ID (e.g., "linux", "windows").
     pub device_id: String,
     /// How often to push/pull sync state (seconds).
@@ -24,6 +33,9 @@ impl Default for Sync {
     fn default() -> Self {
         Self {
             firebase_db_url: String::new(),
+            firebase_api_key: String::new(),
+            firebase_email: String::new(),
+            firebase_password: String::new(),
             device_id: "linux".to_string(),
             sync_interval_seconds: 10,
         }
@@ -127,11 +139,7 @@ impl Default for Config {
             logging: Logging {
                 level: "info".to_string(),
             },
-            sync: Sync {
-                firebase_db_url: String::new(),
-                device_id: "linux".to_string(),
-                sync_interval_seconds: 10,
-            },
+            sync: Sync::default(),
         }
     }
 }
