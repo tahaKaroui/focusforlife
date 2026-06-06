@@ -20,8 +20,15 @@ free_time_evening_prompt = "default_yes"
 free_time_break_prompt = "default_yes"
 prompt_timeout_seconds = 60
 
+# Cross-device sync via Firebase Realtime Database. Leave the fields below empty
+# to run standalone (no sync). To enable, copy this file to e.g.
+# config/linux.local.toml (gitignored), fill in the values, and run the daemon
+# with `--config config/linux.local.toml`. See docs/firebase-setup.md.
 [sync]
-firebase_db_url = "https://YOUR-PROJECT-default-rtdb.YOUR-REGION.firebasedatabase.app"
+firebase_db_url = ""
+firebase_api_key = ""
+firebase_email = ""
+firebase_password = ""
 device_id = "linux"
 sync_interval_seconds = 10
 

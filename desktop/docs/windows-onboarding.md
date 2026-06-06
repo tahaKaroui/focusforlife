@@ -27,11 +27,11 @@ hour_stamp = year × 1_000_000 + day_of_year × 100 + hour
 Example: 2026-03-22 17:00 CET (day 81) → `2026 * 1_000_000 + 81 * 100 + 17 = 2_026_008_117`
 
 ### Firebase Realtime Database
-- **URL:** `https://YOUR-PROJECT-default-rtdb.YOUR-REGION.firebasedatabase.app`
-- **Auth:** none (test mode — tighten rules before going multi-user)
+- **URL:** your project's RTDB URL, e.g. `https://<project>-default-rtdb.<region>.firebasedatabase.app`
+- **Auth:** shared email/password account; rules lock `/users/{uid}` to its owner (see `docs/firebase-setup.md`)
 - **Schema:**
   ```
-  /devices/{device_id}/
+  /users/{uid}/devices/{device_id}/
     date                 "2026-03-22"          (local date string)
     daily_seconds        497                   (long)
     hourly_used_seconds  73                    (long)
@@ -170,10 +170,14 @@ action `ffl-windows.exe --config C:\ProgramData\FocusForLife\config.toml`.
 ### Step 8 — Config file
 Copy `config/example.toml` as a starting point.
 Place at `C:\ProgramData\FocusForLife\config.toml`.
-The `[sync]` section is the only required addition:
+Fill in the `[sync]` section with your own Firebase values (see
+`docs/firebase-setup.md`); leave it empty to run standalone:
 ```toml
 [sync]
-firebase_db_url = "https://YOUR-PROJECT-default-rtdb.YOUR-REGION.firebasedatabase.app"
+firebase_db_url  = "https://<project>-default-rtdb.<region>.firebasedatabase.app"
+firebase_api_key = "<web-api-key>"
+firebase_email   = "<shared-account-email>"
+firebase_password = "<shared-account-password>"
 device_id = "windows"
 sync_interval_seconds = 10
 ```
