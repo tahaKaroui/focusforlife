@@ -29,12 +29,15 @@ object FocusRules {
     private const val KEY_HOURLY_STAMP = "hourly_stamp"
 
     private const val DAILY_QUOTA_SECONDS = 60 * 60L // 1 hour shared quota
-    private const val HOURLY_LIMIT_MS = 10 * 60 * 1000L // 10 minutes per hour
-    private val HARD_BLOCK_START: LocalTime = LocalTime.of(23, 30)
-    private val HARD_BLOCK_END: LocalTime = LocalTime.of(11, 0)
+    private const val HOURLY_LIMIT_MS = 7 * 60 * 1000L // 7 minutes per hour (default)
+    private const val MORNING_HOURLY_LIMIT_MS = 5 * 60 * 1000L // 5 minutes for hours 9-10
+    private const val FIREBASE_PUSH_INTERVAL_MS = 10_000L // push at most every 10 seconds
+    private val HARD_BLOCK_START: LocalTime = LocalTime.of(23, 0)
+    private val HARD_BLOCK_END: LocalTime = LocalTime.of(9, 0)
 
     private val lock = Any()
     @Volatile private var lastStatus: BlockStatus? = null
+    @Volatile private var lastFirebasePushMs: Long = 0L
 
     enum class BlockStatus { NONE, HARD_WINDOW, COOLDOWN, QUOTA }
 
@@ -78,11 +81,16 @@ object FocusRules {
                 .putStringSet(KEY_APP_SET, updatedApps)
                 .apply()
             updateHourlyLocked(prefs, millis)
-            // Push to Firebase for cross-device sync.
-            val dailySecs = TimeUnit.MILLISECONDS.toSeconds(total)
-            val hourlyUsed = prefs.getLong(KEY_HOURLY_USED, 0L)
-            val stamp = prefs.getLong(KEY_HOURLY_STAMP, 0L)
-            FocusSync.pushLocalState(dailySecs, TimeUnit.MILLISECONDS.toSeconds(hourlyUsed), stamp)
+            // Push to Firebase for cross-device sync, throttled to avoid flooding
+            // the main thread with onDataChange callbacks every second.
+            val now = System.currentTimeMillis()
+            if (now - lastFirebasePushMs >= FIREBASE_PUSH_INTERVAL_MS) {
+                lastFirebasePushMs = now
+                val dailySecs = TimeUnit.MILLISECONDS.toSeconds(total)
+                val hourlyUsed = prefs.getLong(KEY_HOURLY_USED, 0L)
+                val stamp = prefs.getLong(KEY_HOURLY_STAMP, 0L)
+                FocusSync.pushLocalState(dailySecs, TimeUnit.MILLISECONDS.toSeconds(hourlyUsed), stamp)
+            }
             if (millis >= 900) {
                 FocusLogger.v("Usage +${millis}ms source=$sourceId total=$total")
             }
@@ -133,7 +141,8 @@ object FocusRules {
             // Add remote hourly usage from other devices (already in seconds, convert to ms).
             val remoteMs = FocusSync.remoteHourlyUsedSeconds * 1000L
             val totalUsed = localUsed + remoteMs
-            return TimeUnit.MILLISECONDS.toSeconds((HOURLY_LIMIT_MS - totalUsed).coerceAtLeast(0L))
+            val limit = hourlyLimitMs(now)
+            return TimeUnit.MILLISECONDS.toSeconds((limit - totalUsed).coerceAtLeast(0L))
         }
     }
 
@@ -162,7 +171,13 @@ object FocusRules {
         (getUsageSeconds(context) + FocusSync.remoteDailySeconds) >= DAILY_QUOTA_SECONDS
 
     fun isHardBlocked(now: LocalTime = LocalTime.now()): Boolean {
-        return now.isAfter(HARD_BLOCK_START) || now.isBefore(HARD_BLOCK_END)
+        return if (HARD_BLOCK_START.isAfter(HARD_BLOCK_END)) {
+            // Overnight window (e.g. 23:30 → 11:00)
+            now.isAfter(HARD_BLOCK_START) || now.isBefore(HARD_BLOCK_END)
+        } else {
+            // Same-day window (e.g. 00:30 → 11:00)
+            now.isAfter(HARD_BLOCK_START) && now.isBefore(HARD_BLOCK_END)
+        }
     }
 
     fun hardBlockStart(): LocalTime = HARD_BLOCK_START
@@ -216,6 +231,11 @@ object FocusRules {
         val time = Instant.ofEpochMilli(now).atZone(zone).plusHours(1)
         val nextHour = time.withMinute(0).withSecond(0).withNano(0)
         return nextHour.toInstant().toEpochMilli()
+    }
+
+    private fun hourlyLimitMs(now: Long): Long {
+        val hour = Instant.ofEpochMilli(now).atZone(ZoneId.systemDefault()).hour
+        return if (hour in 9..10) MORNING_HOURLY_LIMIT_MS else HOURLY_LIMIT_MS
     }
 
     private fun appKey(sourceId: String) = "$KEY_APP_PREFIX$sourceId"
