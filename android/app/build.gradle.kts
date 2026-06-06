@@ -1,9 +1,20 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.google.services)
 }
+
+// Shared Firebase account credentials are read from local.properties (gitignored)
+// so they never get committed. See docs/firebase-setup.md.
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+fun localProp(key: String): String =
+    (localProps.getProperty(key) ?: System.getenv(key) ?: "")
 
 android {
     namespace = "dev.focusforlife.android"
@@ -19,6 +30,11 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Shared Firebase account every device signs in with (cross-device sync).
+        buildConfigField("String", "FFL_FIREBASE_EMAIL", "\"${localProp("ffl.firebase.email")}\"")
+        buildConfigField("String", "FFL_FIREBASE_PASSWORD", "\"${localProp("ffl.firebase.password")}\"")
+        buildConfigField("String", "FFL_FIREBASE_DB_URL", "\"${localProp("ffl.firebase.dbUrl")}\"")
     }
 
     buildTypes {
@@ -55,6 +71,7 @@ dependencies {
     implementation(libs.androidx.work.runtime.ktx)
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.database)
+    implementation(libs.firebase.auth)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
