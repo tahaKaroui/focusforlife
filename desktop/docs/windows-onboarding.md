@@ -61,7 +61,7 @@ Example: 2026-03-22 17:00 CET (day 81) → `2026 * 1_000_000 + 81 * 100 + 17 = 2
 ### Step 1 — Repo & branch
 ```
 git clone https://github.com/tahaKaroui/focusforlife.git
-cd focusforlife
+cd focusforlife/desktop
 git checkout -b feature/windows-app
 ```
 The Windows app lives in a new crate inside the existing Rust workspace
