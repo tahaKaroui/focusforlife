@@ -774,6 +774,8 @@ fn broadcast_status(
         hourly_used_seconds: tracker.hourly_used_seconds(),
         hourly_limit_seconds: resolved_hourly_limit_seconds(config, now),
         cooldown_remaining_seconds: result.cooldown_remaining_seconds,
+        hard_block_start: Some(config.windows.hard_block.start.clone()),
+        hard_block_end: Some(config.windows.hard_block.end.clone()),
     };
     ipc.broadcast(&DaemonEvent::Status(snap)).ok();
 }
@@ -817,6 +819,8 @@ fn broadcast_status_combined(
         hourly_used_seconds: combined_hourly,
         hourly_limit_seconds,
         cooldown_remaining_seconds: cooldown_remaining,
+        hard_block_start: Some(config.windows.hard_block.start.clone()),
+        hard_block_end: Some(config.windows.hard_block.end.clone()),
     };
     ipc.broadcast(&DaemonEvent::Status(snap)).ok();
 }

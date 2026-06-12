@@ -21,6 +21,11 @@ pub struct StatusSnapshot {
     pub hourly_used_seconds: u32,
     pub hourly_limit_seconds: u32,
     pub cooldown_remaining_seconds: u32,
+    /// Hard block window bounds (HH:MM), optional so older daemons still parse.
+    #[serde(default)]
+    pub hard_block_start: Option<String>,
+    #[serde(default)]
+    pub hard_block_end: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

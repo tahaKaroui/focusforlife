@@ -202,7 +202,9 @@ fn main() -> Result<()> {
         let daily_quota_s = config.rules.daily_quota_minutes * 60;
         let hourly_limit_s = config.rules.hourly_limit_minutes * 60;
         let status_json = format!(
-            "{{\"state\":\"{}\",\"daily_remaining\":{},\"hourly_remaining\":{}}}",
+            "{{\"state\":\"{}\",\"daily_remaining\":{},\"hourly_remaining\":{},\
+             \"daily_quota\":{},\"hourly_limit\":{},\
+             \"hard_block_start\":\"{}\",\"hard_block_end\":\"{}\"}}",
             match result.state {
                 FocusState::Allowed => "allowed",
                 FocusState::BlockedHardWindow => "blocked_hard_window",
@@ -211,6 +213,10 @@ fn main() -> Result<()> {
             },
             daily_quota_s.saturating_sub(combined_daily),
             hourly_limit_s.saturating_sub(combined_hourly),
+            daily_quota_s,
+            hourly_limit_s,
+            config.windows.hard_block.start,
+            config.windows.hard_block.end,
         );
         let _ = fs::write(r"C:\ProgramData\FocusForLife\status.json", &status_json);
 

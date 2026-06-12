@@ -1220,6 +1220,7 @@ dependencies = [
  "anyhow",
  "eframe",
  "ffl-shared",
+ "image",
  "serde_json",
 ]
 
@@ -1238,6 +1239,7 @@ dependencies = [
  "chrono",
  "eframe",
  "ffl-shared",
+ "image",
  "rusqlite",
  "serde",
  "serde_json",
