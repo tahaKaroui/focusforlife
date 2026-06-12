@@ -726,7 +726,7 @@ fn run_activitywatch_tracking(
         tracker.tick(storage, now, on_target, 1)?;
 
         if tick_count % 2 == 0 {
-            broadcast_status_combined(config, combined_daily, combined_hourly, &tracker, now, &ipc);
+            broadcast_status_combined(config, &result, combined_daily, combined_hourly, now, &ipc);
         }
 
         handle_free_time_prompt(config, storage, now, &ipc)?;
@@ -792,33 +792,23 @@ fn resolved_hourly_limit_seconds(config: &Config, now: chrono::DateTime<chrono::
 
 fn broadcast_status_combined(
     config: &Config,
+    result: &rules::RuleResult,
     combined_daily: u32,
     combined_hourly: u32,
-    _tracker: &HourlyTracker,
     now: chrono::DateTime<chrono::Local>,
     ipc: &IpcServer,
 ) {
-    let hourly_limit_seconds = resolved_hourly_limit_seconds(config, now);
-    let daily_quota_seconds = config.rules.daily_quota_minutes * 60;
-    let state = if combined_daily >= daily_quota_seconds {
-        ffl_shared::ipc::FocusState::BlockedQuota
-    } else if combined_hourly >= hourly_limit_seconds {
-        ffl_shared::ipc::FocusState::BlockedCooldown
-    } else {
-        ffl_shared::ipc::FocusState::Allowed
-    };
-    let cooldown_remaining = if combined_hourly >= hourly_limit_seconds {
-        crate::tracker::seconds_until_next_hour(now)
-    } else {
-        0
-    };
+    // result comes from rules::evaluate over the combined (local + remote)
+    // usage, so it already accounts for the hard block window, free time,
+    // quotas, and cooldown. Broadcasting anything else makes the UI disagree
+    // with what enforcement is actually doing.
     let snap = StatusSnapshot {
-        state,
+        state: result.state.clone(),
         daily_used_seconds: combined_daily,
-        daily_quota_seconds,
+        daily_quota_seconds: result.daily_quota_seconds,
         hourly_used_seconds: combined_hourly,
-        hourly_limit_seconds,
-        cooldown_remaining_seconds: cooldown_remaining,
+        hourly_limit_seconds: resolved_hourly_limit_seconds(config, now),
+        cooldown_remaining_seconds: result.cooldown_remaining_seconds,
         hard_block_start: Some(config.windows.hard_block.start.clone()),
         hard_block_end: Some(config.windows.hard_block.end.clone()),
     };
