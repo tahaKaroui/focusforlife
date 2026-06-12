@@ -28,6 +28,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     }
 
     private var activePackage: String? = null
+    private var lastBlockMs: Long = 0L
     private var lastActiveTimestamp: Long = 0L
     private var pendingStopDeadline: Long = 0L
     private var pendingStopPackage: String? = null
@@ -85,6 +86,9 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         tickActiveUsage()
 
         val packageName = event.packageName.toString()
+        // Ignore our own windows (block screen, dashboard): reacting to them
+        // re-triggers blocking logic against ourselves.
+        if (packageName == applicationContext.packageName) return
         if (shouldBlockUninstallDialog(packageName) ||
             shouldBlockFocusTogglePage(packageName) ||
             shouldBlockDisplayOverOtherAppsPage(packageName) ||
@@ -209,7 +213,9 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         // Defeat the "minimize into a MIUI floating/freeform window" bypass: rootInActiveWindow
         // only sees the focused window, so a blocked app/site shoved into a small window keeps
         // playing. Once over quota, scan ALL visible windows and kick if a blocked target is up.
-        if (shouldBlockNow() && isBlockedTargetVisibleAcrossWindows()) {
+        // Skip while the block screen is up: the kicked app often lingers in the window list
+        // during MIUI's transition animation and would re-trigger an immediate second kick.
+        if (!BlockedActivity.isShowing() && shouldBlockNow() && isBlockedTargetVisibleAcrossWindows()) {
             finalizeActiveUsage()
             finalizeBrowserUsage()
             FocusLogger.i("Blocking via cross-window scan (floating/minimized target)")
@@ -307,6 +313,15 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     }
 
     private fun blockNow() {
+        // Debounce: events keep firing during the HOME transition and the block
+        // screen launch. Re-triggering on every one of them used to press HOME
+        // again (hiding the block screen we just opened), causing a black
+        // flashing loop where the message never stayed on screen.
+        val now = System.currentTimeMillis()
+        if (BlockedActivity.isShowing() || now - lastBlockMs < BLOCK_DEBOUNCE_MS) {
+            return
+        }
+        lastBlockMs = now
         performGlobalAction(GLOBAL_ACTION_HOME)
         FocusLogger.i("Block screen shown.")
         val intent = Intent(this, BlockedActivity::class.java).apply {
@@ -595,6 +610,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         fun isConnected(): Boolean = connected
 
         private const val USAGE_TICK_MS = 1_000L
+        private const val BLOCK_DEBOUNCE_MS = 3_000L
         private const val PENDING_STOP_GRACE_MS = 1_800L
         private const val URL_CHECK_INTERVAL_MS = 500L
         private val TRANSIENT_PACKAGES = setOf(
