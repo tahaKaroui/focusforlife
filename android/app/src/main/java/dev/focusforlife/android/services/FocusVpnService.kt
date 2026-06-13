@@ -51,10 +51,28 @@ class FocusVpnService : VpnService() {
             stopSelf()
             return START_NOT_STICKY
         }
-        startForeground(
-            FocusForegroundNotifications.VPN_NOTIFICATION_ID,
-            FocusForegroundNotifications.buildVpnNotification(this, "DNS guard running")
-        )
+        // On API 34+ a foreground service must declare a type. Pass it explicitly
+        // and never let a foreground-service restriction crash the process: this
+        // process also hosts the accessibility blocker, so a hard crash here used
+        // to take the whole blocker down (e.g. when relaunched after a swipe-away).
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    FocusForegroundNotifications.VPN_NOTIFICATION_ID,
+                    FocusForegroundNotifications.buildVpnNotification(this, "DNS guard running"),
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                )
+            } else {
+                startForeground(
+                    FocusForegroundNotifications.VPN_NOTIFICATION_ID,
+                    FocusForegroundNotifications.buildVpnNotification(this, "DNS guard running")
+                )
+            }
+        } catch (t: Throwable) {
+            FocusLogger.e("VPN startForeground failed; stopping cleanly instead of crashing", t)
+            stopSelf()
+            return START_NOT_STICKY
+        }
         if (vpnThread?.isAlive == true) {
             FocusLogger.v("VPN already running; start ignored")
             return START_STICKY
