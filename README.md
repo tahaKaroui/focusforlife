@@ -12,6 +12,10 @@ This is a **build-from-source** project. The blocklists are compiled into the
 binaries, so unblocking something in a weak moment requires editing a file and
 rebuilding — not flipping a toggle. The friction is the point.
 
+> **New here? Start with [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)** — one
+> walkthrough from a fresh clone to a working blocker on desktop and/or phone, with
+> optional cross-device sync at the end.
+
 ## What's in here
 
 | Directory | Platform | What it does |
