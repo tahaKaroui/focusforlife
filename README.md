@@ -16,6 +16,24 @@ rebuilding — not flipping a toggle. The friction is the point.
 > walkthrough from a fresh clone to a working blocker on desktop and/or phone, with
 > optional cross-device sync at the end.
 
+## See it in action
+
+Open a blocked app and you're kicked out instantly — no grace period, no "just 5
+more minutes." Reopen it ten times and it blocks all ten.
+
+<p align="center">
+  <img src="docs/media/phone-block.gif" alt="Opening Instagram is instantly blocked" width="280">
+</p>
+
+The desktop companion enforces the same shared budget and shows your status at a
+glance — green while you have time, red during a hard-block window:
+
+<p align="center">
+  <img src="docs/media/desktop-safe.png" alt="Desktop UI — within safe window" width="300">
+  &nbsp;&nbsp;
+  <img src="docs/media/desktop-hibernate.png" alt="Desktop UI — hibernate window" width="300">
+</p>
+
 ## What's in here
 
 | Directory | Platform | What it does |
