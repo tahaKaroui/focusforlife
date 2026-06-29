@@ -1,0 +1,9 @@
+[Unit]
+Description=FocusForLife Guardian (revives daemon + watcher)
+# Third, independent resurrection source. Fired by ffl-guardian.timer, not a
+# long-running service, so stopping the daemon/watcher pair does not stop this.
+# Ensures both are enabled and running. Deliberate OFF: mask all three units.
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'for u in ffl-daemon.service ffl-watcher.service; do systemctl is-enabled --quiet "$u" || systemctl enable "$u"; systemctl is-active --quiet "$u" || systemctl start "$u"; done'

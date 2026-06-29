@@ -1,0 +1,10 @@
+[Unit]
+Description=FocusForLife Guardian timer (re-checks daemon + watcher every 15s)
+
+[Timer]
+OnBootSec=20
+OnUnitActiveSec=15
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

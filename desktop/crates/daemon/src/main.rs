@@ -33,6 +33,42 @@ use storage::Storage;
 mod tracker;
 use tracker::HourlyTracker;
 
+/// Background thread that keeps ffl-watcher running and enabled (the mutual
+/// half of the watchdog pair). Leaves a masked unit alone.
+fn spawn_watcher_guardian() {
+    use std::process::Command;
+    std::thread::spawn(|| {
+        let unit = "ffl-watcher.service";
+        loop {
+            let state = Command::new("systemctl")
+                .args(["is-enabled", unit])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            if state != "masked" {
+                let enabled = Command::new("systemctl")
+                    .args(["is-enabled", "--quiet", unit])
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if !enabled {
+                    let _ = Command::new("systemctl").args(["enable", unit]).status();
+                }
+                let active = Command::new("systemctl")
+                    .args(["is-active", "--quiet", unit])
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if !active {
+                    eprintln!("{unit} down; reviving");
+                    let _ = Command::new("systemctl").args(["start", unit]).status();
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    });
+}
+
 fn main() -> Result<()> {
     // Daemon entrypoint (rule engine + enforcement).
     let args = parse_args();
@@ -80,6 +116,11 @@ fn main() -> Result<()> {
         print_dns_test_assets(&assets);
         return Ok(());
     }
+
+    // Mutual watchdog: keep ffl-watcher alive + enabled. The watcher keeps us
+    // alive in turn, so the pair resurrects each other within ~2s. Deliberate
+    // OFF: `sudo systemctl disable --now ffl-guardian.timer ffl-daemon ffl-watcher`.
+    spawn_watcher_guardian();
 
     let db_path = PathBuf::from("/var/lib/focusforlife/ffl.sqlite");
     let storage = Storage::open(&db_path)?;
