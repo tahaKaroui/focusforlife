@@ -22,7 +22,7 @@ Open a blocked app and you're kicked out instantly — no grace period, no "just
 more minutes." Reopen it ten times and it blocks all ten.
 
 <p align="center">
-  <img src="docs/media/phone-block.gif" alt="Opening Instagram is instantly blocked" width="280">
+  <img src="docs/media/phone-block.png" alt="Opening a blocked app instantly shows the block screen" width="280">
 </p>
 
 The desktop companion enforces the same shared budget and shows your status at a
